@@ -5,9 +5,17 @@ injection, and audit trails. These functions are deliberately conservative
 stubs for the first milestone.
 """
 
+from fastapi import HTTPException, status
 
-def is_request_allowed(user_id: str | None) -> bool:
-    """Return whether a request should be processed."""
 
-    _ = user_id
-    return True
+ALLOWED_ROLES = {"administrator", "analyst", "viewer"}
+
+
+def check_user_role(role: str) -> None:
+    """Reject roles that should not call the assistant."""
+
+    if role.lower() not in ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User role is not allowed to use the assistant.",
+        )

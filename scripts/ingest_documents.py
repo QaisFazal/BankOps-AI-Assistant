@@ -1,28 +1,24 @@
-"""Placeholder document ingestion script.
-
-Later this script will chunk documents, create embeddings, and upsert vectors
-into Pinecone. For now it lists discovered files so the workflow is visible.
-"""
+"""Ingest local markdown documents into JSONL chunk storage."""
 
 from pathlib import Path
 
-from app.services.document_service import discover_documents
+from app.services.document_service import ingest_documents_to_jsonl
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_DOCS = ROOT / "sample_docs"
+OUTPUT_PATH = ROOT / "data" / "document_chunks.jsonl"
 
 
 def main() -> None:
-    """Print documents that would be ingested."""
+    """Parse sample docs and write local JSONL chunks."""
 
-    documents = discover_documents(SAMPLE_DOCS)
-    if not documents:
+    chunks = ingest_documents_to_jsonl(SAMPLE_DOCS, OUTPUT_PATH)
+    if not chunks:
         print("No documents found. Run scripts/seed_mock_docs.py first.")
         return
 
-    for document in documents:
-        print(f"Would ingest: {document}")
+    print(f"Wrote {len(chunks)} chunk(s) to {OUTPUT_PATH}")
 
 
 if __name__ == "__main__":

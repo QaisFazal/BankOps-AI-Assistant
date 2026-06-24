@@ -15,7 +15,7 @@ This project is a starter scaffold for an enterprise AI assistant.
 ## Planned Request Flow
 
 1. A user asks a question in Streamlit.
-2. Streamlit sends the message to the FastAPI `/api/chat` endpoint.
+2. Streamlit sends the message to the FastAPI `/chat` endpoint.
 3. The backend checks security policy and loads conversation memory.
 4. LangGraph routes the request through retrieval, tools, and response generation.
 5. Pinecone returns relevant document chunks.

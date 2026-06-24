@@ -22,10 +22,16 @@ class Settings(BaseSettings):
     langsmith_project: str = "ai-lead-assistant"
     langsmith_tracing: bool = False
 
+    retrieval_backend: str = "local"
+    retrieval_alpha: float = 0.6
+
     pinecone_api_key: str | None = None
     pinecone_index_name: str = "ai-lead-assistant"
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
+    pinecone_namespace: str = "local"
+    pinecone_namespace_mode: str = "environment"
+    pinecone_sparse_dimensions: int = 100_000
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

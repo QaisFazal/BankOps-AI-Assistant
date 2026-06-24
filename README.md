@@ -27,7 +27,7 @@ streamlit run frontend\streamlit_app.py
 ## What Works Now
 
 - `GET /health` returns a health response.
-- `POST /api/chat` returns a scaffolded assistant response.
+- `POST /chat` returns a scaffolded assistant response with activity and citations.
 - Streamlit can send chat messages to the backend.
 - Scripts can create and list mock documents.
 

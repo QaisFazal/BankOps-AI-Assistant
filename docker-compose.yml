@@ -19,7 +19,7 @@ services:
       sh -c "pip install -e '.[dev]' &&
              streamlit run frontend/streamlit_app.py --server.address 0.0.0.0"
     environment:
-      BACKEND_URL: http://backend:8000/api/chat
+      BACKEND_URL: http://backend:8000/chat
     ports:
       - "8501:8501"
     depends_on:
