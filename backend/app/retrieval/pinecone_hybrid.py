@@ -9,7 +9,7 @@ from pinecone import Pinecone
 from app.models.documents import RetrievedDocument
 from app.retrieval.base import MetadataFilter, Retriever
 from app.retrieval.embeddings import EmbeddingProvider, HashEmbeddingProvider, tokenize
-from app.retrieval.local_hybrid import ROLE_ACCESS_LEVELS
+from app.security.guardrails import ROLE_ACCESS_LEVELS
 
 
 logger = logging.getLogger(__name__)

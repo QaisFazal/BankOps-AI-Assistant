@@ -18,13 +18,7 @@ from app.retrieval.embeddings import (
     cosine_similarity,
     tokenize,
 )
-
-
-ROLE_ACCESS_LEVELS = {
-    "viewer": {"internal"},
-    "analyst": {"internal", "confidential"},
-    "administrator": {"internal", "confidential", "restricted"},
-}
+from app.security.guardrails import ROLE_ACCESS_LEVELS
 
 
 def load_chunks(jsonl_path: Path) -> list[DocumentChunk]:

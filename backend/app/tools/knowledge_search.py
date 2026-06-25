@@ -3,6 +3,7 @@
 from app.models.documents import RetrievedDocument
 from app.retrieval.base import MetadataFilter
 from app.retrieval.vector_store import retrieve_relevant_context
+from app.security.guardrails import validate_search_tool_parameters
 from app.tools.permissions import check_tool_permission
 
 
@@ -15,6 +16,7 @@ async def knowledge_search_tool(
     """Search approved knowledge chunks for the caller's role."""
 
     check_tool_permission("knowledge_search_tool", role)
+    validate_search_tool_parameters(query, role, top_k, metadata_filter)
     return await retrieve_relevant_context(
         query=query,
         role=role,

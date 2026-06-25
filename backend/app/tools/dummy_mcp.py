@@ -10,6 +10,7 @@ from app.tools.permissions import check_tool_permission
 
 
 DummyResource = Literal["employee_directory", "service_catalog", "incident_records"]
+ALLOWED_RESOURCES = {"employee_directory", "service_catalog", "incident_records"}
 
 
 EMPLOYEE_DIRECTORY = [
@@ -64,6 +65,8 @@ def dummy_mcp_tool(resource: DummyResource, role: str) -> list[dict[str, Any]]:
     """Return dummy enterprise data for authorized roles."""
 
     check_tool_permission("dummy_mcp_tool", role)
+    if resource not in ALLOWED_RESOURCES:
+        raise ValueError(f"Unknown dummy MCP resource: {resource}.")
 
     if resource == "employee_directory":
         return EMPLOYEE_DIRECTORY

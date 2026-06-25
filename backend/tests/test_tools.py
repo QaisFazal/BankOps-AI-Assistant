@@ -8,6 +8,7 @@ from app.tools.dummy_mcp import dummy_mcp_tool
 from app.tools.knowledge_search import knowledge_search_tool
 from app.tools.permissions import ToolPermissionError, can_execute_tool
 from app.tools.python_analysis import python_analysis_tool
+from app.security.guardrails import GuardrailViolation
 
 
 def test_viewer_cannot_execute_python_analysis_tool() -> None:
@@ -98,3 +99,43 @@ def test_hardcoded_rbac_matrix() -> None:
     assert can_execute_tool("knowledge_search_tool", "administrator")
     assert can_execute_tool("python_analysis_tool", "administrator")
     assert can_execute_tool("dummy_mcp_tool", "administrator")
+
+
+def test_viewer_cannot_search_confidential_metadata_filter() -> None:
+    """Viewer should not be allowed to request confidential search filters."""
+
+    with pytest.raises(GuardrailViolation):
+        asyncio.run(
+            knowledge_search_tool(
+                "payment policy",
+                role="viewer",
+                metadata_filter={"access_level": "confidential"},
+            )
+        )
+
+
+def test_search_tool_rejects_invalid_top_k() -> None:
+    """Search tool should validate top_k before retrieval."""
+
+    with pytest.raises(GuardrailViolation):
+        asyncio.run(knowledge_search_tool("payment policy", role="analyst", top_k=0))
+
+
+def test_search_tool_rejects_unknown_metadata_filter() -> None:
+    """Search tool should reject unsupported metadata filter keys."""
+
+    with pytest.raises(GuardrailViolation):
+        asyncio.run(
+            knowledge_search_tool(
+                "payment policy",
+                role="analyst",
+                metadata_filter={"secret_override": "true"},
+            )
+        )
+
+
+def test_python_analysis_tool_rejects_malformed_incident_records() -> None:
+    """Analytics tool should validate required incident fields."""
+
+    with pytest.raises(GuardrailViolation):
+        python_analysis_tool([{"department": "payments"}], role="analyst")

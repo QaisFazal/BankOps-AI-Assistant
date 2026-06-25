@@ -3,6 +3,7 @@
 from collections import Counter
 from typing import Any
 
+from app.security.guardrails import validate_incident_records
 from app.tools.permissions import check_tool_permission
 
 
@@ -20,6 +21,7 @@ def python_analysis_tool(
     """Group incidents by root cause, department, and date."""
 
     check_tool_permission("python_analysis_tool", role)
+    validate_incident_records(incidents)
 
     root_causes = Counter(_read_field(incident, "root_cause") for incident in incidents)
     departments = Counter(_read_field(incident, "department") for incident in incidents)

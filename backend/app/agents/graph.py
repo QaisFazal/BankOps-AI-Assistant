@@ -13,6 +13,11 @@ from app.memory.store import get_conversation_history, save_conversation_turn
 from app.models.chat import AgentActivity, ChatRequest, ChatResponse, Citation
 from app.models.documents import RetrievedDocument
 from app.retrieval.base import MetadataFilter
+from app.security.guardrails import (
+    GuardrailViolation,
+    detect_prompt_injection,
+    validate_user_question,
+)
 from app.tools.permissions import ToolPermissionError, can_execute_tool
 from app.tools.knowledge_search import knowledge_search_tool
 
@@ -66,17 +71,6 @@ class AssistantState(TypedDict):
     errors: list[str]
     citations: list[Citation]
 
-
-PROMPT_INJECTION_MARKERS = (
-    "ignore previous instructions",
-    "ignore all instructions",
-    "reveal system prompt",
-    "developer message",
-    "bypass access",
-    "disable guardrails",
-    "exfiltrate",
-    "show hidden tools",
-)
 
 BROAD_QUESTION_MARKERS = (
     "overview",
@@ -248,12 +242,12 @@ async def execute_recursive_search(
             top_k=3,
             metadata_filter=metadata_filter,
         )
-    except ToolPermissionError as exc:
-        state["errors"].append(f"Unauthorized tool call blocked: {exc}")
-        state["validation_results"].append("tool authorization failed")
+    except (ToolPermissionError, GuardrailViolation) as exc:
+        state["errors"].append(f"Tool guardrail blocked call: {exc}")
+        state["validation_results"].append("tool guardrail failed")
         append_activity(
             state,
-            "recursive_retrieval",
+            "guardrails",
             "blocked",
             str(exc),
         )
@@ -325,8 +319,27 @@ async def supervisor_node(state: AssistantState) -> AssistantState:
 async def security_node(state: AssistantState) -> AssistantState:
     """Detect prompt injection and tool abuse attempts."""
 
-    question = state["question"].lower()
-    suspicious_markers = [marker for marker in PROMPT_INJECTION_MARKERS if marker in question]
+    try:
+        validate_user_question(state["question"])
+    except GuardrailViolation as exc:
+        state["errors"].append(f"Input validation failed: {exc}")
+        state["validation_results"].append("input length validation failed")
+        append_activity(state, "guardrails", "blocked", str(exc))
+        return append_activity(
+            state,
+            "security_node",
+            "blocked",
+            "Blocked request because user input failed validation.",
+        )
+
+    append_activity(
+        state,
+        "guardrails",
+        "passed",
+        "User input length validation passed.",
+    )
+
+    suspicious_markers = detect_prompt_injection(state["question"])
 
     if suspicious_markers:
         state["errors"].append(
@@ -334,6 +347,12 @@ async def security_node(state: AssistantState) -> AssistantState:
             + ", ".join(suspicious_markers)
         )
         state["validation_results"].append("security check failed")
+        append_activity(
+            state,
+            "guardrails",
+            "blocked",
+            "Prompt injection marker(s): " + ", ".join(suspicious_markers),
+        )
         return append_activity(
             state,
             "security_node",
@@ -347,6 +366,12 @@ async def security_node(state: AssistantState) -> AssistantState:
             f"Unauthorized: role {state['role']} cannot execute {restricted_tool}."
         )
         state["validation_results"].append("tool authorization failed")
+        append_activity(
+            state,
+            "guardrails",
+            "blocked",
+            f"Unauthorized request for {restricted_tool}.",
+        )
         return append_activity(
             state,
             "security_node",
@@ -355,6 +380,12 @@ async def security_node(state: AssistantState) -> AssistantState:
         )
 
     state["validation_results"].append("security check passed")
+    append_activity(
+        state,
+        "guardrails",
+        "passed",
+        "Prompt injection and tool authorization guardrails passed.",
+    )
     return append_activity(
         state,
         "security_node",
@@ -410,10 +441,11 @@ async def retrieval_node(state: AssistantState) -> AssistantState:
                 role=state["role"],
                 top_k=3,
             )
-        except ToolPermissionError as exc:
-            state["errors"].append(f"Unauthorized tool call blocked: {exc}")
-            state["validation_results"].append("tool authorization failed")
+        except (ToolPermissionError, GuardrailViolation) as exc:
+            state["errors"].append(f"Tool guardrail blocked call: {exc}")
+            state["validation_results"].append("tool guardrail failed")
             state["retrieval_results"] = []
+            append_activity(state, "guardrails", "blocked", str(exc))
             return append_activity(
                 state,
                 "retrieval_node",
@@ -598,6 +630,12 @@ async def citation_validation_node(state: AssistantState) -> AssistantState:
             + ", ".join(str(chunk_id) for chunk_id in invalid_citations)
         )
         state["validation_results"].append("citation validation failed")
+        append_activity(
+            state,
+            "guardrails",
+            "blocked",
+            "Citation validation failed for non-retrieved chunk id(s).",
+        )
         return append_activity(
             state,
             "citation_validation_node",
@@ -606,6 +644,12 @@ async def citation_validation_node(state: AssistantState) -> AssistantState:
         )
 
     state["validation_results"].append("citation validation passed")
+    append_activity(
+        state,
+        "guardrails",
+        "passed",
+        "Citation validation guardrail passed.",
+    )
     return append_activity(
         state,
         "citation_validation_node",
