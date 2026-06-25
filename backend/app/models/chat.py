@@ -25,6 +25,8 @@ class AgentActivity(BaseModel):
     retrieval_status: str
     validation_results: list[str] = Field(default_factory=list)
     memory_updates: list[str] = Field(default_factory=list)
+    activity_log: list[dict[str, str]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class Citation(BaseModel):

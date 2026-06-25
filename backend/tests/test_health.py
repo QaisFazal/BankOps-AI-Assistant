@@ -3,9 +3,16 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.memory.store import reset_memory_store
 
 
 client = TestClient(app)
+
+
+def setup_function() -> None:
+    """Reset memory before API tests."""
+
+    reset_memory_store()
 
 
 def test_health_check() -> None:
@@ -37,9 +44,13 @@ def test_chat_returns_mock_answer() -> None:
     assert data["answer"].startswith("I could not find matching local documents") or data[
         "answer"
     ].startswith("Based on the local bank documents")
-    assert data["agent_activity"]["current_state"] == "completed_mock_run"
-    assert data["agent_activity"]["active_node"] == "final_response"
-    assert data["agent_activity"]["tool_calls"] == ["local_hybrid_retriever.search"]
+    assert data["agent_activity"]["current_state"] == "completed_langgraph_run"
+    assert data["agent_activity"]["active_node"] == "citation_validation_node"
+    assert any(
+        tool_call.startswith("knowledge_search_tool")
+        for tool_call in data["agent_activity"]["tool_calls"]
+    )
+    assert data["agent_activity"]["activity_log"][0]["node"] == "memory"
     assert "citations" in data
 
 

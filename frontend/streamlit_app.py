@@ -72,6 +72,12 @@ def show_sidebar() -> str:
     st.sidebar.json(activity.get("validation_results", []), expanded=False)
     st.sidebar.write("Memory updates")
     st.sidebar.json(activity.get("memory_updates", []), expanded=False)
+    st.sidebar.write("Activity log")
+    st.sidebar.json(activity.get("activity_log", []), expanded=False)
+
+    if activity.get("errors"):
+        st.sidebar.error("Graph reported errors")
+        st.sidebar.json(activity.get("errors", []), expanded=False)
 
     if st.session_state.citations:
         st.sidebar.divider()

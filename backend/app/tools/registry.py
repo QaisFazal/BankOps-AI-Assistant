@@ -1,12 +1,20 @@
-"""Central registry for assistant tools.
-
-Future examples might include CRM lookup, ticket creation, calendar search, or
-document approval workflows. Start with an empty list so the graph can be wired
-without committing to tool behavior too early.
-"""
+"""Central registry for assistant tools."""
 
 
 def list_tools() -> list[dict[str, str]]:
     """Return metadata for tools available to the assistant."""
 
-    return []
+    return [
+        {
+            "name": "knowledge_search_tool",
+            "description": "Search approved enterprise knowledge with hybrid retrieval.",
+        },
+        {
+            "name": "python_analysis_tool",
+            "description": "Analyze structured incident data for root cause, department, and date.",
+        },
+        {
+            "name": "dummy_mcp_tool",
+            "description": "Read dummy enterprise directory, service catalog, or incident records.",
+        },
+    ]
