@@ -20,6 +20,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
     -> return answer, agent activity, and citations.
     """
 
-    check_rate_limit(request.user_id)
+    await check_rate_limit(request.user_id)
     check_user_role(request.role)
     return await run_assistant(request)

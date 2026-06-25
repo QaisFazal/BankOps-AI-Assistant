@@ -4,15 +4,17 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.memory.store import reset_memory_store
+from app.security.rate_limiter import reset_rate_limiter
 
 
 client = TestClient(app)
 
 
 def setup_function() -> None:
-    """Reset memory before API tests."""
+    """Reset shared state before API tests."""
 
     reset_memory_store()
+    reset_rate_limiter()
 
 
 def test_health_check() -> None:
@@ -76,3 +78,25 @@ def test_chat_rejects_unsupported_role() -> None:
     )
 
     assert response.status_code == 403
+
+
+def test_chat_returns_graceful_429_when_rate_limited() -> None:
+    """The chat endpoint should return structured rate-limit activity."""
+
+    reset_rate_limiter(capacity=1, refill_rate_per_second=0)
+    payload = {
+        "user_id": "limited-user",
+        "role": "analyst",
+        "message": "How do we handle card authorization latency?",
+        "session_id": "limited-session",
+    }
+
+    first_response = client.post("/chat", json=payload)
+    second_response = client.post("/chat", json=payload)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 429
+    data = second_response.json()
+    assert data["detail"] == "Rate limit exceeded. Please try again shortly."
+    assert data["activity_log"][0]["node"] == "rate_limiter"
+    assert data["activity_log"][0]["status"] == "blocked"

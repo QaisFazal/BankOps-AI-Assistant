@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     app_name: str = "AI Lead Assistant"
     environment: str = "local"
     backend_cors_origins: str = "http://localhost:8501"
+    rate_limit_capacity: int = 60
+    rate_limit_refill_rate_per_second: float = 1.0
 
     openai_api_key: str | None = None
     langsmith_api_key: str | None = None

@@ -5,12 +5,39 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.security.rate_limiter import RateLimitExceeded
+
 
 logger = logging.getLogger(__name__)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
     """Attach app-wide handlers for unexpected errors."""
+
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+        """Return a graceful 429 response with an activity log entry."""
+
+        request_id = getattr(request.state, "request_id", None)
+        activity_log = [
+            {
+                "node": "rate_limiter",
+                "status": "blocked",
+                "message": (
+                    f"Rate limit exceeded for user {exc.user_id}. "
+                    f"Retry after {exc.retry_after_seconds:.2f} second(s)."
+                ),
+            }
+        ]
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(int(exc.retry_after_seconds) + 1)},
+            content={
+                "detail": "Rate limit exceeded. Please try again shortly.",
+                "request_id": request_id,
+                "activity_log": activity_log,
+            },
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
