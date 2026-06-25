@@ -11,10 +11,12 @@ from app.api.exception_handlers import register_exception_handlers
 from app.api.routes import router
 from app.config import get_settings
 from app.observability.logging import configure_logging
+from app.observability.tracing import configure_tracing
 
 
 configure_logging()
 settings = get_settings()
+configure_tracing(settings)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(

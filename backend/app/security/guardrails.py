@@ -4,6 +4,7 @@ Enterprise assistants need careful handling for PII, access control, prompt
 injection, metadata filtering, tool parameters, and audit trails.
 """
 
+import re
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -42,6 +43,16 @@ PROMPT_INJECTION_MARKERS = (
     "show hidden tools",
 )
 
+PROMPT_INJECTION_PATTERNS = (
+    r"\bignore\s+(all\s+)?(previous|prior|above)\s+instructions\b",
+    r"\b(show|reveal|print|dump)\s+(me\s+)?(the\s+)?(hidden\s+)?system\s+prompt\b",
+    r"\bbypass\s+(access|permissions|authorization|rbac)\b",
+    r"\b(disable|turn\s+off)\s+guardrails\b",
+    r"\b(export|show|dump|list)\s+(all\s+)?"
+    r"(confidential|restricted|admin)(\s+(confidential|restricted|admin))*\s+"
+    r"(documents|docs|files|data)\b",
+)
+
 
 class GuardrailViolation(ValueError):
     """Raised when a request or tool call violates a security guardrail."""
@@ -60,8 +71,14 @@ def check_user_role(role: str) -> None:
 def detect_prompt_injection(text: str) -> list[str]:
     """Return prompt-injection markers found in user-controlled text."""
 
-    lowered = text.lower()
-    return [marker for marker in PROMPT_INJECTION_MARKERS if marker in lowered]
+    lowered = re.sub(r"\s+", " ", text.lower()).strip()
+    detected_markers = [marker for marker in PROMPT_INJECTION_MARKERS if marker in lowered]
+    detected_markers.extend(
+        pattern
+        for pattern in PROMPT_INJECTION_PATTERNS
+        if re.search(pattern, lowered)
+    )
+    return detected_markers
 
 
 def validate_user_question(question: str) -> None:

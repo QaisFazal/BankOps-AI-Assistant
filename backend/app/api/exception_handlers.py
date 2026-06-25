@@ -19,6 +19,19 @@ def register_exception_handlers(app: FastAPI) -> None:
         """Return a graceful 429 response with an activity log entry."""
 
         request_id = getattr(request.state, "request_id", None)
+        logger.warning(
+            "Rate limit exceeded",
+            extra={
+                "component": "api",
+                "operation": "rate_limit",
+                "error_type": type(exc).__name__,
+                "fallback": "http_429",
+                "request_id": request_id,
+                "user_id": exc.user_id,
+                "path": request.url.path,
+                "method": request.method,
+            },
+        )
         activity_log = [
             {
                 "node": "rate_limiter",
@@ -46,6 +59,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         logger.exception(
             "Unhandled API exception",
             extra={
+                "component": "api",
+                "operation": "request_handler",
+                "error_type": type(exc).__name__,
+                "fallback": "http_500_safe_response",
                 "method": request.method,
                 "path": request.url.path,
                 "request_id": getattr(request.state, "request_id", None),

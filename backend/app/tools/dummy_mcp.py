@@ -6,6 +6,7 @@ the assistant can be tested against directory, catalog, and incident resources.
 
 from typing import Any, Literal
 
+from app.observability.tracing import build_run_metadata, set_trace_outputs, trace_run
 from app.tools.permissions import check_tool_permission
 
 
@@ -61,18 +62,40 @@ INCIDENT_RECORDS = [
 ]
 
 
-def dummy_mcp_tool(resource: DummyResource, role: str) -> list[dict[str, Any]]:
+def dummy_mcp_tool(
+    resource: DummyResource,
+    role: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> list[dict[str, Any]]:
     """Return dummy enterprise data for authorized roles."""
 
-    check_tool_permission("dummy_mcp_tool", role)
-    if resource not in ALLOWED_RESOURCES:
-        raise ValueError(f"Unknown dummy MCP resource: {resource}.")
+    metadata = build_run_metadata(
+        user_id=user_id,
+        role=role,
+        session_id=session_id,
+        tool_name="dummy_mcp_tool",
+        resource=resource,
+    )
+    with trace_run(
+        "dummy_mcp_tool",
+        run_type="tool",
+        inputs={"resource": resource},
+        metadata=metadata,
+        tags=["tool", "mcp"],
+    ) as run:
+        check_tool_permission("dummy_mcp_tool", role)
+        if resource not in ALLOWED_RESOURCES:
+            raise ValueError(f"Unknown dummy MCP resource: {resource}.")
 
-    if resource == "employee_directory":
-        return EMPLOYEE_DIRECTORY
-    if resource == "service_catalog":
-        return SERVICE_CATALOG
-    if resource == "incident_records":
-        return INCIDENT_RECORDS
+        if resource == "employee_directory":
+            result = EMPLOYEE_DIRECTORY
+        elif resource == "service_catalog":
+            result = SERVICE_CATALOG
+        elif resource == "incident_records":
+            result = INCIDENT_RECORDS
+        else:
+            raise ValueError(f"Unknown dummy MCP resource: {resource}.")
 
-    raise ValueError(f"Unknown dummy MCP resource: {resource}.")
+        set_trace_outputs(run, {"record_count": len(result)})
+        return result

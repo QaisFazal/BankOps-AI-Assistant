@@ -1,11 +1,15 @@
 """Tests for assistant tool permissions and behavior."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
+from app.models.documents import RetrievedDocument
+from app.tools import knowledge_search
 from app.tools.dummy_mcp import dummy_mcp_tool
 from app.tools.knowledge_search import knowledge_search_tool
+from app.tools.errors import ToolTimeoutError
 from app.tools.permissions import ToolPermissionError, can_execute_tool
 from app.tools.python_analysis import python_analysis_tool
 from app.security.guardrails import GuardrailViolation
@@ -139,3 +143,28 @@ def test_python_analysis_tool_rejects_malformed_incident_records() -> None:
 
     with pytest.raises(GuardrailViolation):
         python_analysis_tool([{"department": "payments"}], role="analyst")
+
+
+def test_knowledge_search_timeout_logs_structured_failure(monkeypatch, caplog) -> None:
+    """Knowledge search should raise a tool timeout and log structured fields."""
+
+    async def slow_retrieval(*args, **kwargs) -> list[RetrievedDocument]:
+        _ = (args, kwargs)
+        await asyncio.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(knowledge_search, "retrieve_relevant_context", slow_retrieval)
+    monkeypatch.setattr(
+        knowledge_search,
+        "get_settings",
+        lambda: SimpleNamespace(tool_timeout_seconds=0.001),
+    )
+
+    with pytest.raises(ToolTimeoutError):
+        asyncio.run(knowledge_search_tool("payment incidents", role="analyst"))
+
+    assert any(
+        getattr(record, "tool_name", None) == "knowledge_search_tool"
+        and getattr(record, "fallback", None) == "graph_safe_response"
+        for record in caplog.records
+    )

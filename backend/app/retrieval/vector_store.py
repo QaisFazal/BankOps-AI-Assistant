@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import get_settings
 from app.models.documents import RetrievedDocument
+from app.observability.tracing import build_run_metadata, set_trace_outputs, trace_run
 from app.retrieval.base import MetadataFilter, Retriever
 from app.retrieval.local_hybrid import LocalHybridRetriever
 from app.retrieval.pinecone_hybrid import PineconeHybridRetriever
@@ -54,13 +55,47 @@ async def retrieve_relevant_context(
     limit: int = 3,
     jsonl_path: Path = DEFAULT_JSONL_PATH,
     metadata_filter: MetadataFilter | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> list[RetrievedDocument]:
     """Return relevant chunks from the configured retriever."""
 
     retriever = build_retriever(jsonl_path=jsonl_path)
-    return await retriever.search(
-        query=query,
+    settings = get_settings()
+    metadata = build_run_metadata(
+        user_id=user_id,
         role=role,
-        top_k=limit,
-        metadata_filter=metadata_filter,
+        session_id=session_id,
+        retrieval_backend=settings.retrieval_backend,
+        retriever_type=type(retriever).__name__,
     )
+    with trace_run(
+        "hybrid_retrieval",
+        run_type="retriever",
+        inputs={"query": query, "top_k": limit, "metadata_filter": metadata_filter},
+        metadata=metadata,
+        tags=["retrieval", settings.retrieval_backend],
+    ) as run:
+        results = await retriever.search(
+            query=query,
+            role=role,
+            top_k=limit,
+            metadata_filter=metadata_filter,
+        )
+        set_trace_outputs(
+            run,
+            {
+                "result_count": len(results),
+                "sources": [
+                    {
+                        "chunk_id": result.chunk_id,
+                        "document_id": result.document_id,
+                        "title": result.title,
+                        "source_file": result.source_file,
+                        "score": result.score,
+                    }
+                    for result in results
+                ],
+            },
+        )
+        return results

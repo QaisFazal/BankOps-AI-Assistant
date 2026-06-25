@@ -75,8 +75,18 @@ class PineconeHybridRetriever:
                 include_metadata=True,
             )
             return self._response_to_documents(response)
-        except Exception:
-            logger.exception("Pinecone retrieval failed; falling back to local retrieval")
+        except Exception as exc:
+            logger.exception(
+                "Pinecone retrieval failed; falling back to local retrieval",
+                extra={
+                    "component": "retrieval",
+                    "operation": "pinecone_hybrid_search",
+                    "error_type": type(exc).__name__,
+                    "fallback": "local_retriever" if self.fallback_retriever else "empty_results",
+                    "role": role,
+                    "retrieval_backend": "pinecone",
+                },
+            )
             if self.fallback_retriever is None:
                 return []
 

@@ -22,7 +22,23 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
 
-        for key in ("request_id", "method", "path", "status_code", "duration_ms"):
+        structured_keys = (
+            "request_id",
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+            "component",
+            "operation",
+            "error_type",
+            "fallback",
+            "user_id",
+            "role",
+            "session_id",
+            "tool_name",
+            "retrieval_backend",
+        )
+        for key in structured_keys:
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value

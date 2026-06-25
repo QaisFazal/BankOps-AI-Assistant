@@ -5,19 +5,25 @@ simple grounded answer. The important part for this milestone is that each step
 has a clear node, state update, and activity log entry.
 """
 
-from typing import Literal, TypedDict
+import logging
+import re
+from pathlib import Path
+from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from app.memory.store import get_conversation_history, save_conversation_turn
 from app.models.chat import AgentActivity, ChatRequest, ChatResponse, Citation
 from app.models.documents import RetrievedDocument
+from app.observability.tracing import build_run_metadata, set_trace_outputs, trace_run
 from app.retrieval.base import MetadataFilter
 from app.security.guardrails import (
     GuardrailViolation,
     detect_prompt_injection,
     validate_user_question,
 )
+from app.tools.dummy_mcp import dummy_mcp_tool
+from app.tools.errors import ToolExecutionError, ToolTimeoutError
 from app.tools.permissions import ToolPermissionError, can_execute_tool
 from app.tools.knowledge_search import knowledge_search_tool
 
@@ -105,6 +111,10 @@ MCP_REQUEST_MARKERS = (
     "enterprise data",
 )
 
+ROOT = Path(__file__).resolve().parents[3]
+SAMPLE_DOCS_ROOT = ROOT / "sample_docs"
+logger = logging.getLogger(__name__)
+
 
 def append_activity(
     state: AssistantState,
@@ -144,6 +154,22 @@ def requested_restricted_tool(question: str) -> str | None:
         return "python_analysis_tool"
     if any(marker in lowered for marker in MCP_REQUEST_MARKERS):
         return "dummy_mcp_tool"
+
+    return None
+
+
+def requested_mcp_resource(question: str) -> str | None:
+    """Infer the dummy MCP resource requested by the user, if any."""
+
+    lowered = question.lower()
+    if "employee directory" in lowered:
+        return "employee_directory"
+    if "service catalog" in lowered:
+        return "service_catalog"
+    if "incident records" in lowered:
+        return "incident_records"
+    if "mcp" in lowered or "enterprise data" in lowered:
+        return "service_catalog"
 
     return None
 
@@ -241,8 +267,20 @@ async def execute_recursive_search(
             role=state["role"],
             top_k=3,
             metadata_filter=metadata_filter,
+            user_id=state["user_id"],
+            session_id=state["session_id"],
         )
-    except (ToolPermissionError, GuardrailViolation) as exc:
+    except ToolTimeoutError as exc:
+        state["errors"].append(f"Tool timed out: {exc}")
+        state["validation_results"].append("tool execution failed")
+        append_activity(
+            state,
+            "knowledge_search_tool",
+            "failed",
+            f"Depth {depth}: search tool timed out.",
+        )
+        return []
+    except (ToolPermissionError, GuardrailViolation, ToolExecutionError) as exc:
         state["errors"].append(f"Tool guardrail blocked call: {exc}")
         state["validation_results"].append("tool guardrail failed")
         append_activity(
@@ -298,6 +336,64 @@ def deduplicate_results(results: list[RetrievedDocument]) -> list[RetrievedDocum
         deduplicated.append(result)
 
     return deduplicated
+
+
+def run_optional_mcp_tool(state: AssistantState) -> list[dict[str, Any]]:
+    """Try to load optional enterprise context without blocking the graph."""
+
+    resource = requested_mcp_resource(state["question"])
+    if resource is None:
+        return []
+
+    state["tool_calls"].append("dummy_mcp_tool")
+    try:
+        records = dummy_mcp_tool(
+            resource,
+            role=state["role"],
+            user_id=state["user_id"],
+            session_id=state["session_id"],
+        )
+    except ToolPermissionError as exc:
+        state["errors"].append(f"Unauthorized: role {state['role']} cannot execute dummy_mcp_tool.")
+        state["validation_results"].append("tool authorization failed")
+        append_activity(state, "dummy_mcp_tool", "failed", "MCP authorization failed.")
+        raise exc
+    except Exception as exc:
+        state["errors"].append("MCP tool failed; continued without MCP context.")
+        state["validation_results"].append("mcp tool failed")
+        logger.exception(
+            "MCP tool failed; continuing without MCP context",
+            extra={
+                "component": "tool",
+                "operation": "dummy_mcp_tool",
+                "error_type": type(exc).__name__,
+                "fallback": "continue_without_mcp",
+                "user_id": state["user_id"],
+                "role": state["role"],
+                "session_id": state["session_id"],
+                "tool_name": "dummy_mcp_tool",
+            },
+        )
+        append_activity(
+            state,
+            "dummy_mcp_tool",
+            "failed",
+            "MCP data was unavailable, so the graph continued with document retrieval only.",
+        )
+        return []
+
+    state["analysis_result"] = (
+        f"MCP context loaded from {resource}: {len(records)} record(s). "
+        + state["analysis_result"]
+    ).strip()
+    state["validation_results"].append("mcp tool completed")
+    append_activity(
+        state,
+        "dummy_mcp_tool",
+        "completed",
+        f"Loaded {len(records)} record(s) from {resource}.",
+    )
+    return records
 
 
 async def supervisor_node(state: AssistantState) -> AssistantState:
@@ -433,6 +529,17 @@ async def planning_node(state: AssistantState) -> AssistantState:
 async def retrieval_node(state: AssistantState) -> AssistantState:
     """Call the configured hybrid retriever."""
 
+    try:
+        run_optional_mcp_tool(state)
+    except ToolPermissionError as exc:
+        state["errors"].append(f"Tool guardrail blocked call: {exc}")
+        return append_activity(
+            state,
+            "retrieval_node",
+            "blocked",
+            str(exc),
+        )
+
     if state["search_plan"] is None:
         state["tool_calls"].append("knowledge_search_tool")
         try:
@@ -440,8 +547,26 @@ async def retrieval_node(state: AssistantState) -> AssistantState:
                 state["question"],
                 role=state["role"],
                 top_k=3,
+                user_id=state["user_id"],
+                session_id=state["session_id"],
             )
-        except (ToolPermissionError, GuardrailViolation) as exc:
+        except ToolTimeoutError as exc:
+            state["errors"].append(f"Tool timed out: {exc}")
+            state["validation_results"].append("tool execution failed")
+            state["retrieval_results"] = []
+            append_activity(
+                state,
+                "knowledge_search_tool",
+                "failed",
+                "Search tool timed out before retrieval completed.",
+            )
+            return append_activity(
+                state,
+                "retrieval_node",
+                "failed",
+                "Retrieval could not complete because the search tool timed out.",
+            )
+        except (ToolPermissionError, GuardrailViolation, ToolExecutionError) as exc:
             state["errors"].append(f"Tool guardrail blocked call: {exc}")
             state["validation_results"].append("tool guardrail failed")
             state["retrieval_results"] = []
@@ -522,6 +647,184 @@ async def analysis_node(state: AssistantState) -> AssistantState:
     )
 
 
+def normalize_markdown_text(text: str) -> str:
+    """Make retrieved markdown sections readable inside a chat answer."""
+
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        lines.append(stripped.removeprefix("- ").strip())
+
+    return re.sub(r"\s+", " ", " ".join(lines)).strip()
+
+
+def truncate_sentence(text: str, max_chars: int = 260) -> str:
+    """Trim text without leaving a noisy half-sentence when possible."""
+
+    clean_text = normalize_markdown_text(text)
+    if len(clean_text) <= max_chars:
+        return clean_text
+
+    truncated = clean_text[:max_chars].rsplit(" ", 1)[0].strip()
+    return f"{truncated}..."
+
+
+def extract_markdown_section(markdown: str, section_names: tuple[str, ...]) -> str:
+    """Extract a named markdown section from a retrieved chunk."""
+
+    active = False
+    section_lines: list[str] = []
+    wanted = {name.lower() for name in section_names}
+
+    for line in markdown.splitlines():
+        heading_match = re.match(r"^#{1,6}\s+(.+)$", line.strip())
+        if heading_match:
+            heading = heading_match.group(1).strip().lower()
+            if active and heading not in wanted:
+                break
+            active = heading in wanted
+            continue
+
+        if active:
+            section_lines.append(line)
+
+    return "\n".join(section_lines).strip()
+
+
+def fallback_summary(markdown: str) -> str:
+    """Return the first useful paragraph when a named section is not present."""
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in markdown.split("\n\n")
+        if paragraph.strip() and not paragraph.strip().startswith("#")
+    ]
+    return paragraphs[0] if paragraphs else markdown
+
+
+def read_source_body(result: RetrievedDocument) -> str:
+    """Load the original markdown body for a retrieved source when available."""
+
+    if not result.source_file:
+        return result.snippet
+
+    source_path = (SAMPLE_DOCS_ROOT / result.source_file).resolve()
+    try:
+        source_path.relative_to(SAMPLE_DOCS_ROOT.resolve())
+    except ValueError:
+        return result.snippet
+
+    if not source_path.exists():
+        return result.snippet
+
+    text = source_path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) == 3:
+            return parts[2].strip()
+
+    return text.strip()
+
+
+def source_reference(result: RetrievedDocument) -> str:
+    """Create a compact citation reference for one retrieved chunk."""
+
+    parts = [result.source_file or result.title]
+    if result.chunk_id:
+        parts.append(f"chunk {result.chunk_id}")
+    return ", ".join(parts)
+
+
+def unique_answer_sources(results: list[RetrievedDocument], limit: int = 4) -> list[RetrievedDocument]:
+    """Keep one answer card per source document while preserving retrieval rank."""
+
+    seen: set[str] = set()
+    unique_results: list[RetrievedDocument] = []
+    for result in results:
+        key = result.document_id or result.source_file or result.title
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_results.append(result)
+        if len(unique_results) == limit:
+            break
+
+    return unique_results
+
+
+def format_retrieved_source(result: RetrievedDocument, index: int) -> str:
+    """Format one retrieved document as a useful answer section."""
+
+    source_body = read_source_body(result)
+    summary = extract_markdown_section(source_body, ("Summary",)) or fallback_summary(
+        source_body
+    )
+    impact = extract_markdown_section(source_body, ("Impact", "Customer Impact"))
+    root_cause = extract_markdown_section(source_body, ("Root Cause",))
+    resolution = extract_markdown_section(source_body, ("Resolution",))
+
+    metadata_bits = [
+        bit
+        for bit in (result.department, result.document_type, result.created_date)
+        if bit
+    ]
+    metadata = f" ({', '.join(metadata_bits)})" if metadata_bits else ""
+    lines = [
+        f"{index}. **{result.title}**{metadata}",
+        f"   - Summary: {truncate_sentence(summary)}",
+    ]
+
+    if impact:
+        lines.append(f"   - Impact: {truncate_sentence(impact, max_chars=220)}")
+    if root_cause:
+        lines.append(f"   - Root cause: {truncate_sentence(root_cause, max_chars=220)}")
+    if resolution:
+        lines.append(f"   - Resolution: {truncate_sentence(resolution, max_chars=220)}")
+
+    lines.append(f"   - Source: `{source_reference(result)}`")
+    return "\n".join(lines)
+
+
+def build_synthesis_note(
+    retrieval_results: list[RetrievedDocument],
+    analysis_result: str,
+) -> str:
+    """Add a short cross-source takeaway without exposing internal planning logs."""
+
+    if not retrieval_results:
+        return ""
+
+    departments = sorted({result.department for result in retrieval_results if result.department})
+    doc_types = sorted({result.document_type for result in retrieval_results if result.document_type})
+    scope_parts = []
+    if departments:
+        scope_parts.append(f"departments: {', '.join(departments)}")
+    if doc_types:
+        scope_parts.append(f"document types: {', '.join(doc_types)}")
+
+    scope_text = f" ({'; '.join(scope_parts)})" if scope_parts else ""
+    if analysis_result.startswith("Aggregated planned search batches"):
+        source_count = len(unique_answer_sources(retrieval_results, limit=100))
+        return f"\n\nTakeaway: I found {source_count} relevant source document(s){scope_text}."
+
+    return f"\n\nTakeaway: {analysis_result}{scope_text}."
+
+
+def has_blocking_security_error(errors: list[str]) -> bool:
+    """Return whether errors represent unsafe user input or authorization failure."""
+
+    blocking_markers = (
+        "Potential prompt injection",
+        "Input validation failed",
+        "Unauthorized:",
+        "Citation validation failed",
+        "Tool guardrail blocked call",
+    )
+    return any(error.startswith(blocking_markers) for error in errors)
+
+
 def build_answer(
     question: str,
     citations: list[Citation],
@@ -529,6 +832,7 @@ def build_answer(
     analysis_result: str,
     search_plan: SearchPlan | None,
     conversation_history: list[str],
+    retrieval_results: list[RetrievedDocument],
 ) -> str:
     """Build a simple retrieval-grounded final answer."""
 
@@ -540,10 +844,38 @@ def build_answer(
                 "Please ask a document-search question or switch to an authorized role."
             )
 
-        return (
-            "I cannot answer that request because it appears to contain unsafe instructions. "
-            "Please ask a normal question about the approved enterprise documents."
-        )
+        if any("MCP tool failed" in error for error in errors):
+            limitation = (
+                "Note: the enterprise MCP data source was unavailable, so I continued "
+                "using the approved document search results only."
+            )
+            if not citations:
+                return (
+                    limitation
+                    + " I could not find enough local document context to answer confidently."
+                )
+        elif any("timed out" in error.lower() for error in errors):
+            return (
+                "I could not complete the request because a backend tool timed out. "
+                "Please try again in a moment."
+            )
+        elif any("response generation failed" in error for error in errors):
+            return (
+                "I found relevant context, but the answer generator failed. "
+                "Please try again in a moment."
+            )
+        elif has_blocking_security_error(errors):
+            return (
+                "I cannot answer that request because it appears to contain unsafe instructions. "
+                "Please ask a normal question about the approved enterprise documents."
+            )
+        else:
+            return (
+                "I hit a temporary backend issue while processing that request. "
+                "Please try again in a moment."
+            )
+    else:
+        limitation = ""
 
     memory_note = ""
     if conversation_history:
@@ -559,23 +891,26 @@ def build_answer(
             + memory_note
         )
 
+    answer_sources = unique_answer_sources(retrieval_results)
     source_summaries = [
-        f"- {citation.title}: {citation.snippet.replace(chr(10), ' ')[:300]}"
-        for citation in citations[:3]
+        format_retrieved_source(result, index)
+        for index, result in enumerate(answer_sources, start=1)
     ]
-    planning_note = ""
+    scope_note = ""
     if search_plan is not None:
-        planning_note = (
-            f"\n\nSearch objective: {search_plan['objective']}\n"
-            f"Aggregation: {search_plan['aggregation_strategy']}"
+        scope_note = (
+            "\n\nI used a multi-step search plan to compare related incident documents, "
+            "then deduplicated the strongest sources."
         )
+
     return (
-        f"Based on the local bank documents, here is what I found for: {question}\n\n"
+        f"Here is a grounded summary for: {question}\n\n"
         + "\n".join(source_summaries)
-        + f"\n\nAnalysis: {analysis_result}"
-        + planning_note
+        + build_synthesis_note(retrieval_results, analysis_result)
+        + scope_note
+        + (f"\n\n{limitation}" if limitation else "")
         + memory_note
-        + "\n\nCitations are attached to this response and validated against retrieved chunks."
+        + "\n\nSources were validated against retrieved chunks before this answer was returned."
     )
 
 
@@ -593,14 +928,42 @@ async def response_node(state: AssistantState) -> AssistantState:
         )
         for result in state["retrieval_results"]
     ]
-    state["final_answer"] = build_answer(
-        state["question"],
-        state["citations"],
-        state["errors"],
-        state["analysis_result"],
-        state["search_plan"],
-        state["conversation_history"],
-    )
+    try:
+        state["final_answer"] = build_answer(
+            state["question"],
+            state["citations"],
+            state["errors"],
+            state["analysis_result"],
+            state["search_plan"],
+            state["conversation_history"],
+            state["retrieval_results"],
+        )
+    except Exception as exc:
+        state["errors"].append("response generation failed")
+        state["validation_results"].append("response generation failed")
+        state["final_answer"] = (
+            "I found relevant context, but the answer generator failed. "
+            "Please try again in a moment."
+        )
+        logger.exception(
+            "Response generation failed",
+            extra={
+                "component": "agent",
+                "operation": "response_node",
+                "error_type": type(exc).__name__,
+                "fallback": "safe_llm_fallback_message",
+                "user_id": state["user_id"],
+                "role": state["role"],
+                "session_id": state["session_id"],
+            },
+        )
+        append_activity(
+            state,
+            "response_node",
+            "failed",
+            "Answer generation failed, so a fallback message was returned.",
+        )
+        return state
 
     return append_activity(
         state,
@@ -765,8 +1128,15 @@ def activity_from_state(state: AssistantState) -> AgentActivity:
             f"aggregation_strategy: {search_plan['aggregation_strategy']}",
         ]
 
+    if state["errors"] and has_blocking_security_error(state["errors"]):
+        current_state = "blocked"
+    elif state["errors"]:
+        current_state = "completed_with_warnings"
+    else:
+        current_state = "completed_langgraph_run"
+
     return AgentActivity(
-        current_state="blocked" if state["errors"] else "completed_langgraph_run",
+        current_state=current_state,
         active_node=active_node,
         tool_calls=state["tool_calls"],
         retrieval_status=f"completed: retrieved {retrieval_count} chunk(s)",
@@ -780,12 +1150,77 @@ def activity_from_state(state: AssistantState) -> AgentActivity:
 async def run_assistant(request: ChatRequest) -> ChatResponse:
     """Run the LangGraph assistant workflow and return the API response."""
 
-    final_state: AssistantState = await assistant_graph.ainvoke(initial_state_from_request(request))
-    final_state = persist_memory_after_run(final_state)
-
-    return ChatResponse(
-        answer=final_state["final_answer"],
-        session_id=final_state["session_id"],
-        agent_activity=activity_from_state(final_state),
-        citations=final_state["citations"],
+    metadata = build_run_metadata(
+        user_id=request.user_id,
+        role=request.role,
+        session_id=request.session_id,
+        graph_name="assistant_graph",
     )
+    with trace_run(
+        "langgraph_assistant_run",
+        run_type="chain",
+        inputs={"question": request.message},
+        metadata=metadata,
+        tags=["langgraph", "chat"],
+    ) as run:
+        try:
+            final_state: AssistantState = await assistant_graph.ainvoke(
+                initial_state_from_request(request)
+            )
+            final_state = persist_memory_after_run(final_state)
+
+            response = ChatResponse(
+                answer=final_state["final_answer"],
+                session_id=final_state["session_id"],
+                agent_activity=activity_from_state(final_state),
+                citations=final_state["citations"],
+            )
+        except Exception as exc:
+            logger.exception(
+                "LangGraph assistant run failed",
+                extra={
+                    "component": "agent",
+                    "operation": "langgraph_assistant_run",
+                    "error_type": type(exc).__name__,
+                    "fallback": "safe_chat_response",
+                    "user_id": request.user_id,
+                    "role": request.role,
+                    "session_id": request.session_id,
+                },
+            )
+            response = ChatResponse(
+                answer=(
+                    "I hit a temporary backend issue while processing that request. "
+                    "Please try again in a moment."
+                ),
+                session_id=request.session_id,
+                agent_activity=AgentActivity(
+                    current_state="completed_with_warnings",
+                    active_node="langgraph_assistant_run",
+                    tool_calls=[],
+                    retrieval_status="not completed",
+                    validation_results=["graph execution failed"],
+                    memory_updates=[],
+                    activity_log=[
+                        {
+                            "node": "langgraph_assistant_run",
+                            "status": "failed",
+                            "message": "Assistant graph failed, so a fallback response was returned.",
+                        }
+                    ],
+                    errors=["graph execution failed"],
+                ),
+                citations=[],
+            )
+
+        set_trace_outputs(
+            run,
+            {
+                "current_state": response.agent_activity.current_state,
+                "active_node": response.agent_activity.active_node,
+                "tool_calls": response.agent_activity.tool_calls,
+                "citation_count": len(response.citations),
+                "error_count": len(response.agent_activity.errors),
+            },
+        )
+        return response

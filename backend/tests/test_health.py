@@ -45,7 +45,7 @@ def test_chat_returns_mock_answer() -> None:
     assert data["session_id"] == "session-123"
     assert data["answer"].startswith("I could not find matching local documents") or data[
         "answer"
-    ].startswith("Based on the local bank documents")
+    ].startswith("Here is a grounded summary")
     assert data["agent_activity"]["current_state"] == "completed_langgraph_run"
     assert data["agent_activity"]["active_node"] == "citation_validation_node"
     assert any(
