@@ -22,6 +22,9 @@ locally without remote traces.
 The backend creates these trace spans:
 
 - `langgraph_assistant_run`: the top-level assistant run for one `/chat` request.
+- `langgraph_assistant_stream`: the top-level assistant run for one `/chat/stream`
+  request.
+- `gemini_generate_answer`: the Gemini final-answer generation call.
 - `knowledge_search_tool`: the server-side search tool call.
 - `hybrid_retrieval`: the local or Pinecone-backed retrieval operation.
 - `python_analysis_tool`: structured incident analytics tool execution.
@@ -55,6 +58,55 @@ debug why a response used a specific source.
 
 6. Inspect child runs for tool calls and retrieval. Check metadata filters such
    as `user_id`, `role`, and `session_id` when debugging a specific conversation.
+
+## Verify Gemini Generation
+
+Use this checklist to prove the LLM path is active:
+
+1. Confirm `.env` has:
+
+   ```env
+   GEMINI_API_KEY=your_gemini_key
+   GEMINI_MODEL=gemini-1.5-flash
+   LANGSMITH_TRACING=true
+   ```
+
+2. Restart the backend after editing `.env`.
+
+3. Ask a retrieval-backed question:
+
+   ```text
+   Summarize payment outage incidents and cite the sources.
+   ```
+
+4. In the API response or Streamlit sidebar, check:
+
+   ```text
+   gemini generation completed
+   ```
+
+5. In LangSmith, open `langgraph_assistant_run` and confirm there is a child run:
+
+   ```text
+   gemini_generate_answer
+   ```
+
+6. Open `gemini_generate_answer` and inspect:
+
+   - input question
+   - context count
+   - `user_id`, `role`, and `session_id` metadata
+   - answer preview in outputs
+
+7. Confirm the final answer cites chunk ids that also appear in the returned
+   citations list.
+
+If Gemini is unavailable, the trace or sidebar should show fallback behavior
+instead of a stack trace:
+
+```text
+gemini fallback used
+```
 
 ## Design Notes
 

@@ -1,13 +1,29 @@
 """API smoke tests for the FastAPI app."""
 
-from fastapi.testclient import TestClient
+import json
 
+from fastapi.testclient import TestClient
+import pytest
+
+from app.api import routes
+from app.agents import graph
 from app.main import app
 from app.memory.store import reset_memory_store
 from app.security.rate_limiter import reset_rate_limiter
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def disable_real_llm(monkeypatch) -> None:
+    """Keep API smoke tests from calling Gemini when local .env has a key."""
+
+    async def no_llm_answer(*args, **kwargs):
+        _ = (args, kwargs)
+        return None
+
+    monkeypatch.setattr(graph, "generate_llm_answer", no_llm_answer)
 
 
 def setup_function() -> None:
@@ -100,3 +116,83 @@ def test_chat_returns_graceful_429_when_rate_limited() -> None:
     assert data["detail"] == "Rate limit exceeded. Please try again shortly."
     assert data["activity_log"][0]["node"] == "rate_limiter"
     assert data["activity_log"][0]["status"] == "blocked"
+
+
+def _collect_stream_events(payload: dict[str, str]) -> list[dict]:
+    """Collect newline-delimited stream events from the test client."""
+
+    with client.stream("POST", "/chat/stream", json=payload) as response:
+        assert response.status_code == 200
+        return [json.loads(line) for line in response.iter_lines() if line]
+
+
+def test_chat_stream_returns_activity_tokens_and_metadata() -> None:
+    """The streaming endpoint should emit activity, token, and metadata events."""
+
+    events = _collect_stream_events(
+        {
+            "user_id": "stream-user",
+            "role": "analyst",
+            "message": "Summarize payment outage incidents.",
+            "session_id": "stream-session",
+        }
+    )
+    event_types = [event["type"] for event in events]
+
+    assert "activity_update" in event_types
+    assert "token" in event_types
+    assert event_types[-1] == "final_metadata"
+    assert "".join(event["data"] for event in events if event["type"] == "token").strip()
+
+
+def test_chat_stream_final_metadata_includes_activity_and_citations() -> None:
+    """Final streaming metadata should include citations and agent activity."""
+
+    events = _collect_stream_events(
+        {
+            "user_id": "stream-user",
+            "role": "analyst",
+            "message": "Summarize payment outage incidents.",
+            "session_id": "stream-session",
+        }
+    )
+    final_metadata = events[-1]["data"]
+
+    assert final_metadata["session_id"] == "stream-session"
+    assert final_metadata["agent_activity"]["active_node"] == "citation_validation_node"
+    assert final_metadata["agent_activity"]["tool_calls"]
+    assert final_metadata["citations"]
+
+
+def test_chat_stream_error_event_is_graceful(monkeypatch) -> None:
+    """Streaming errors should return a safe event without stack traces."""
+
+    async def failing_stream(_request):
+        if False:
+            yield {}
+        raise RuntimeError("secret stack detail")
+
+    monkeypatch.setattr(routes, "stream_assistant_events", failing_stream)
+
+    events = _collect_stream_events(
+        {
+            "user_id": "stream-user",
+            "role": "analyst",
+            "message": "Summarize payment outage incidents.",
+            "session_id": "stream-session",
+        }
+    )
+
+    assert events == [
+        {
+            "type": "error",
+            "data": {
+                "message": (
+                    "I hit a temporary backend issue while streaming that request. "
+                    "Please try again in a moment."
+                ),
+                "session_id": "stream-session",
+            },
+        }
+    ]
+    assert "secret stack detail" not in json.dumps(events)

@@ -5,6 +5,7 @@ Enterprise AI assistant prototype for a commercial bank assignment.
 The project demonstrates:
 
 - FastAPI backend with `/health` and `/chat`
+- Streaming backend endpoint with `/chat/stream`
 - Streamlit chat frontend
 - LangGraph orchestration
 - Local hybrid RAG retrieval
@@ -13,6 +14,7 @@ The project demonstrates:
 - Prompt-injection guardrails
 - Session-based conversational memory
 - Tool layer with permission checks
+- Google Gemini response generation with deterministic fallback
 - LangSmith tracing for graph runs, tools, and retrieval
 - Graceful error handling for tool, retrieval, MCP, and response-generation
   failures
@@ -52,6 +54,13 @@ Copy-Item .env.example .env
 
 Do not commit `.env`. Add real keys only to `.env`.
 
+For Gemini answer generation, set:
+
+```env
+GEMINI_API_KEY=your_key
+GEMINI_MODEL=gemini-1.5-flash
+```
+
 ## Ingest Mock Documents
 
 ```powershell
@@ -90,6 +99,9 @@ Open the Streamlit URL shown in the terminal, usually:
 http://localhost:8501
 ```
 
+The frontend uses `/chat/stream` by default and falls back to `/chat` if
+streaming fails.
+
 ## Example Questions
 
 Use role `analyst`:
@@ -126,9 +138,44 @@ Run a chat request, then open LangSmith and inspect:
 
 ```text
 langgraph_assistant_run
+gemini_generate_answer
 knowledge_search_tool
 hybrid_retrieval
 ```
+
+## Verify Gemini Is Answering
+
+After setting `GEMINI_API_KEY`, restart the backend and ask:
+
+```text
+Summarize payment outage incidents and cite the sources.
+```
+
+Check these signals:
+
+- The answer should be more synthesized than the deterministic fallback.
+- `agent_activity.validation_results` should include `gemini generation completed`.
+- LangSmith should show a child span named `gemini_generate_answer`.
+- The answer should cite only retrieved chunk ids.
+
+If Gemini is missing or fails, the app still answers with the deterministic
+fallback and `validation_results` includes `gemini fallback used`.
+
+## Streaming API
+
+The streaming endpoint returns newline-delimited JSON:
+
+```text
+POST /chat/stream
+```
+
+Event types:
+
+- `activity_update`: current graph state, active node, tool calls, retrieval
+  status, validation results, and memory updates.
+- `token`: one streamed answer token.
+- `final_metadata`: final `agent_activity`, `citations`, and `session_id`.
+- `error`: safe user-facing streaming error message.
 
 ## Tests
 

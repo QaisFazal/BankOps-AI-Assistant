@@ -18,9 +18,11 @@ class Settings(BaseSettings):
     backend_cors_origins: str = "http://localhost:8501"
     rate_limit_capacity: int = 60
     rate_limit_refill_rate_per_second: float = 1.0
-    tool_timeout_seconds: float = 5.0
+    tool_timeout_seconds: float = 30.0
 
     openai_api_key: str | None = None
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-1.5-flash"
     langsmith_api_key: str | None = None
     langsmith_project: str = "ai-lead-assistant"
     langsmith_tracing: bool = False

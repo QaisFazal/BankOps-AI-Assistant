@@ -10,8 +10,9 @@
   without paid infrastructure.
 - Pinecone is optional and can be enabled by environment configuration.
 - LangSmith is optional and only sends traces when an API key is configured.
-- The current answer generator is deterministic and template-based. It stands in
-  for a future LLM call.
+- Gemini is the real LLM provider for final response generation.
+- The deterministic answer builder remains as a fallback when Gemini credentials
+  are missing or the provider fails.
 
 ## Design Tradeoffs
 
@@ -46,12 +47,12 @@ demonstrates decomposition, depth limits, batch retrieval, and aggregation
 without cost or nondeterminism. The tradeoff is that plans are less flexible than
 real model-generated plans.
 
-### Deterministic Answer Generation
+### Gemini With Deterministic Fallback
 
-The assistant currently formats retrieved evidence into readable answers instead
-of calling a real LLM. This makes citation validation easier and prevents
-hallucinated language during the assignment. The tradeoff is that answers are
-less conversational and less capable of synthesis.
+Gemini provides the final user-facing answer when credentials are configured.
+The fallback builder keeps the demo reliable when the API key is missing, the
+provider times out, or the SDK is unavailable. The tradeoff is that local runs
+without a Gemini key still produce template-style answers.
 
 ## Known Limitations
 
@@ -60,7 +61,7 @@ less conversational and less capable of synthesis.
 - No production document ingestion pipeline for PDFs, Word files, permissions,
   or incremental updates.
 - No Pinecone upsert script yet.
-- No real OpenAI embedding or chat model call wired into the graph.
+- No real OpenAI embedding call wired into retrieval yet.
 - No streaming responses.
 - No human feedback loop or evaluation dataset.
 - No tenant isolation beyond mock role and metadata filtering.
@@ -80,7 +81,7 @@ less conversational and less capable of synthesis.
 
 ## Future Improvements
 
-- Add OpenAI embeddings and chat model integration behind abstractions.
+- Add production embeddings behind the existing embedding abstraction.
 - Add Pinecone ingestion/upsert support.
 - Replace hardcoded RBAC with enterprise identity and policy checks.
 - Store memory in Redis or Postgres with encryption and retention settings.

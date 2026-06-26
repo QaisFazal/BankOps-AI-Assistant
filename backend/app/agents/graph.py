@@ -7,6 +7,7 @@ has a clear node, state update, and activity log entry.
 
 import logging
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -22,6 +23,7 @@ from app.security.guardrails import (
     detect_prompt_injection,
     validate_user_question,
 )
+from app.services.llm_service import generate_answer as generate_llm_answer
 from app.tools.dummy_mcp import dummy_mcp_tool
 from app.tools.errors import ToolExecutionError, ToolTimeoutError
 from app.tools.permissions import ToolPermissionError, can_execute_tool
@@ -111,6 +113,10 @@ MCP_REQUEST_MARKERS = (
     "enterprise data",
 )
 
+RESTRICTED_OPERATION_MARKERS = {
+    "card network failover": "Card network failover procedures are restricted operational content.",
+}
+
 ROOT = Path(__file__).resolve().parents[3]
 SAMPLE_DOCS_ROOT = ROOT / "sample_docs"
 logger = logging.getLogger(__name__)
@@ -170,6 +176,17 @@ def requested_mcp_resource(question: str) -> str | None:
         return "incident_records"
     if "mcp" in lowered or "enterprise data" in lowered:
         return "service_catalog"
+
+    return None
+
+
+def requested_restricted_operation(question: str) -> str | None:
+    """Return a restricted operation marker requested by the user, if any."""
+
+    lowered = question.lower()
+    for marker, message in RESTRICTED_OPERATION_MARKERS.items():
+        if marker in lowered:
+            return message
 
     return None
 
@@ -338,6 +355,12 @@ def deduplicate_results(results: list[RetrievedDocument]) -> list[RetrievedDocum
     return deduplicated
 
 
+def memory_key_for_user(session_id: str, user_id: str, role: str) -> str:
+    """Scope memory by session, user, and role to avoid access-level leaks."""
+
+    return f"{session_id}:{user_id}:{role.lower()}"
+
+
 def run_optional_mcp_tool(state: AssistantState) -> list[dict[str, Any]]:
     """Try to load optional enterprise context without blocking the graph."""
 
@@ -473,6 +496,25 @@ async def security_node(state: AssistantState) -> AssistantState:
             "security_node",
             "blocked",
             f"Blocked unauthorized request for {restricted_tool}.",
+        )
+
+    restricted_operation = requested_restricted_operation(state["question"])
+    if restricted_operation and state["role"] != "administrator":
+        state["errors"].append(
+            f"Unauthorized: role {state['role']} cannot access restricted operation details."
+        )
+        state["validation_results"].append("restricted operation authorization failed")
+        append_activity(
+            state,
+            "guardrails",
+            "blocked",
+            restricted_operation,
+        )
+        return append_activity(
+            state,
+            "security_node",
+            "blocked",
+            "Blocked restricted operational procedure request before retrieval.",
         )
 
     state["validation_results"].append("security check passed")
@@ -825,6 +867,19 @@ def has_blocking_security_error(errors: list[str]) -> bool:
     return any(error.startswith(blocking_markers) for error in errors)
 
 
+def should_use_llm_answer(state: AssistantState) -> bool:
+    """Return whether the response node should try Gemini generation."""
+
+    if not state["retrieval_results"] or not state["citations"]:
+        return False
+    if has_blocking_security_error(state["errors"]):
+        return False
+    if any("timed out" in error.lower() for error in state["errors"]):
+        return False
+
+    return True
+
+
 def build_answer(
     question: str,
     citations: list[Citation],
@@ -838,6 +893,13 @@ def build_answer(
 
     if errors:
         if any(error.startswith("Unauthorized:") or "Unauthorized tool call" in error for error in errors):
+            if any("restricted operation details" in error for error in errors):
+                return (
+                    "I cannot provide those steps because they are restricted operational "
+                    "procedures. Please contact cards operations or use an administrator "
+                    "role if you are authorized."
+                )
+
             return (
                 "You are not authorized to use the requested tool. "
                 "Viewers can chat and search approved knowledge only. "
@@ -929,7 +991,7 @@ async def response_node(state: AssistantState) -> AssistantState:
         for result in state["retrieval_results"]
     ]
     try:
-        state["final_answer"] = build_answer(
+        deterministic_answer = build_answer(
             state["question"],
             state["citations"],
             state["errors"],
@@ -938,6 +1000,41 @@ async def response_node(state: AssistantState) -> AssistantState:
             state["conversation_history"],
             state["retrieval_results"],
         )
+        llm_answer = None
+        if should_use_llm_answer(state):
+            llm_answer = await generate_llm_answer(
+                question=state["question"],
+                role=state["role"],
+                user_id=state["user_id"],
+                session_id=state["session_id"],
+                retrieval_results=state["retrieval_results"],
+                citations=state["citations"],
+                conversation_history=state["conversation_history"],
+                analysis_result=state["analysis_result"],
+                errors=state["errors"],
+            )
+
+        if llm_answer:
+            state["final_answer"] = llm_answer
+            state["validation_results"].append("gemini generation completed")
+            append_activity(
+                state,
+                "response_node",
+                "completed",
+                f"Generated Gemini answer with {len(state['citations'])} citation(s).",
+            )
+            return state
+
+        state["final_answer"] = deterministic_answer
+        if should_use_llm_answer(state):
+            state["validation_results"].append("gemini fallback used")
+            append_activity(
+                state,
+                "response_node",
+                "completed",
+                "Gemini was unavailable, so deterministic fallback answer was used.",
+            )
+            return state
     except Exception as exc:
         state["errors"].append("response generation failed")
         state["validation_results"].append("response generation failed")
@@ -1024,13 +1121,14 @@ async def citation_validation_node(state: AssistantState) -> AssistantState:
 def persist_memory_after_run(state: AssistantState) -> AssistantState:
     """Save the completed user/assistant turn to session memory."""
 
+    memory_key = memory_key_for_user(state["session_id"], state["user_id"], state["role"])
     updates = save_conversation_turn(
-        session_id=state["session_id"],
+        session_id=memory_key,
         question=state["question"],
         answer=state["final_answer"],
     )
     state["memory_updates"].extend(updates)
-    state["conversation_history"] = get_conversation_history(state["session_id"])
+    state["conversation_history"] = get_conversation_history(memory_key)
 
     for update in updates:
         append_activity(state, "memory_node", "updated", update)
@@ -1075,11 +1173,12 @@ assistant_graph = build_assistant_graph()
 def initial_state_from_request(request: ChatRequest) -> AssistantState:
     """Create LangGraph state from an API chat request."""
 
-    conversation_history = get_conversation_history(request.session_id)
+    memory_key = memory_key_for_user(request.session_id, request.user_id, request.role)
+    conversation_history = get_conversation_history(memory_key)
     memory_message = (
-        f"Loaded {len(conversation_history)} memory item(s) for session {request.session_id}."
+        f"Loaded {len(conversation_history)} memory item(s) for this user and role."
         if conversation_history
-        else f"No stored memory yet for session {request.session_id}."
+        else f"No stored memory yet for this user and role in session {request.session_id}."
     )
     return {
         "user_id": request.user_id,
@@ -1224,3 +1323,109 @@ async def run_assistant(request: ChatRequest) -> ChatResponse:
             },
         )
         return response
+
+
+async def stream_assistant_events(request: ChatRequest) -> AsyncIterator[dict[str, Any]]:
+    """Stream graph activity, final answer tokens, and final metadata."""
+
+    metadata = build_run_metadata(
+        user_id=request.user_id,
+        role=request.role,
+        session_id=request.session_id,
+        graph_name="assistant_graph",
+        streaming=True,
+    )
+    with trace_run(
+        "langgraph_assistant_stream",
+        run_type="chain",
+        inputs={"question": request.message},
+        metadata=metadata,
+        tags=["langgraph", "chat", "streaming"],
+    ) as run:
+        try:
+            final_state: AssistantState | None = None
+            initial_state = initial_state_from_request(request)
+            yield {
+                "type": "activity_update",
+                "data": activity_from_state(initial_state).model_dump(),
+            }
+
+            async for state_update in assistant_graph.astream(
+                initial_state,
+                stream_mode="values",
+            ):
+                final_state = state_update
+                yield {
+                    "type": "activity_update",
+                    "data": activity_from_state(final_state).model_dump(),
+                }
+
+            if final_state is None:
+                raise RuntimeError("Assistant graph did not produce a final state.")
+
+            final_state = persist_memory_after_run(final_state)
+            response = ChatResponse(
+                answer=final_state["final_answer"],
+                session_id=final_state["session_id"],
+                agent_activity=activity_from_state(final_state),
+                citations=final_state["citations"],
+            )
+            yield {
+                "type": "activity_update",
+                "data": response.agent_activity.model_dump(),
+            }
+
+            for token in re.findall(r"\S+\s*", response.answer):
+                yield {"type": "token", "data": token}
+
+            yield {
+                "type": "final_metadata",
+                "data": {
+                    "session_id": response.session_id,
+                    "agent_activity": response.agent_activity.model_dump(),
+                    "citations": [citation.model_dump() for citation in response.citations],
+                },
+            }
+            set_trace_outputs(
+                run,
+                {
+                    "current_state": response.agent_activity.current_state,
+                    "active_node": response.agent_activity.active_node,
+                    "tool_calls": response.agent_activity.tool_calls,
+                    "citation_count": len(response.citations),
+                    "error_count": len(response.agent_activity.errors),
+                    "streamed": True,
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "Streaming assistant run failed",
+                extra={
+                    "component": "agent",
+                    "operation": "langgraph_assistant_stream",
+                    "error_type": type(exc).__name__,
+                    "fallback": "stream_error_event",
+                    "user_id": request.user_id,
+                    "role": request.role,
+                    "session_id": request.session_id,
+                },
+            )
+            yield {
+                "type": "error",
+                "data": {
+                    "message": (
+                        "I hit a temporary backend issue while streaming that request. "
+                        "Please try again in a moment."
+                    ),
+                    "session_id": request.session_id,
+                },
+            }
+            set_trace_outputs(
+                run,
+                {
+                    "current_state": "completed_with_warnings",
+                    "active_node": "langgraph_assistant_stream",
+                    "error_count": 1,
+                    "streamed": True,
+                },
+            )

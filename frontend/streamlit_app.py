@@ -1,5 +1,6 @@
 """Streamlit frontend for the AI Lead Assistant demo."""
 
+import json
 import os
 from uuid import uuid4
 
@@ -8,6 +9,10 @@ import streamlit as st
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000/chat")
+BACKEND_STREAM_URL = os.getenv(
+    "BACKEND_STREAM_URL",
+    f"{BACKEND_URL.rstrip('/')}/stream" if BACKEND_URL.rstrip("/").endswith("/chat") else BACKEND_URL,
+)
 
 
 st.set_page_config(page_title="AI Lead Assistant", layout="centered")
@@ -35,6 +40,7 @@ def show_sidebar() -> str:
     )
     st.sidebar.caption(f"Session: `{st.session_state.session_id}`")
     st.sidebar.caption(f"Backend: `{BACKEND_URL}`")
+    st.sidebar.caption(f"Stream: `{BACKEND_STREAM_URL}`")
 
     if st.sidebar.button("Clear chat"):
         st.session_state.messages = []
@@ -95,6 +101,67 @@ for message in st.session_state.messages:
 
 prompt = st.chat_input("Ask about enterprise docs, accounts, or next actions")
 
+
+def build_chat_payload(message: str, role: str) -> dict[str, str]:
+    """Build the backend chat request payload."""
+
+    return {
+        "user_id": f"{role}-demo-user",
+        "role": role,
+        "message": message,
+        "session_id": st.session_state.session_id,
+    }
+
+
+def call_non_streaming_chat(payload: dict[str, str]) -> str:
+    """Call the stable non-streaming endpoint as a fallback."""
+
+    response = requests.post(BACKEND_URL, json=payload, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    st.session_state.agent_activity = data.get("agent_activity")
+    st.session_state.citations = data.get("citations", [])
+    return data["answer"]
+
+
+def stream_chat_response(payload: dict[str, str]) -> str:
+    """Stream answer tokens from the backend and update Streamlit placeholders."""
+
+    answer_parts: list[str] = []
+    answer_placeholder = st.empty()
+    live_activity = st.sidebar.empty()
+
+    with requests.post(
+        BACKEND_STREAM_URL,
+        json=payload,
+        stream=True,
+        timeout=60,
+    ) as response:
+        response.raise_for_status()
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if not raw_line:
+                continue
+
+            event = json.loads(raw_line)
+            event_type = event.get("type")
+            data = event.get("data", {})
+
+            if event_type == "activity_update":
+                st.session_state.agent_activity = data
+                live_activity.json(data, expanded=False)
+            elif event_type == "token":
+                answer_parts.append(str(data))
+                answer_placeholder.markdown("".join(answer_parts) + "▌")
+            elif event_type == "final_metadata":
+                st.session_state.agent_activity = data.get("agent_activity")
+                st.session_state.citations = data.get("citations", [])
+            elif event_type == "error":
+                raise RuntimeError(str(data.get("message", "Streaming failed.")))
+
+    answer = "".join(answer_parts).strip()
+    answer_placeholder.markdown(answer)
+    return answer
+
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -102,21 +169,11 @@ if prompt:
 
     with st.chat_message("assistant"):
         try:
-            response = requests.post(
-                BACKEND_URL,
-                json={
-                    "user_id": f"{selected_role}-demo-user",
-                    "role": selected_role,
-                    "message": prompt,
-                    "session_id": st.session_state.session_id,
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
-            data = response.json()
-            answer = data["answer"]
-            st.session_state.agent_activity = data.get("agent_activity")
-            st.session_state.citations = data.get("citations", [])
+            payload = build_chat_payload(prompt, selected_role)
+            try:
+                answer = stream_chat_response(payload)
+            except (requests.RequestException, RuntimeError, json.JSONDecodeError):
+                answer = call_non_streaming_chat(payload)
         except requests.HTTPError as exc:
             detail = exc.response.text if exc.response is not None else str(exc)
             answer = f"Backend returned an error: `{detail}`"

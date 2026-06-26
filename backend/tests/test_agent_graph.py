@@ -15,10 +15,15 @@ from app.tools.errors import ToolTimeoutError
 
 
 @pytest.fixture(autouse=True)
-def clear_memory() -> None:
-    """Keep graph tests independent from session memory side effects."""
+def clear_memory(monkeypatch) -> None:
+    """Keep graph tests independent from memory and real LLM side effects."""
+
+    async def no_llm_answer(*args: Any, **kwargs: Any) -> None:
+        _ = (args, kwargs)
+        return None
 
     reset_memory_store()
+    monkeypatch.setattr(graph, "generate_llm_answer", no_llm_answer)
 
 
 def test_langgraph_workflow_records_activity_log() -> None:
@@ -189,6 +194,30 @@ def test_langgraph_uses_previous_session_memory() -> None:
     )
 
 
+def test_memory_is_scoped_by_user_and_role() -> None:
+    """Restricted prior answers should not leak when the role changes in one session."""
+
+    admin_request = ChatRequest(
+        user_id="administrator-demo-user",
+        role="administrator",
+        message="What are the steps for card network failover?",
+        session_id="shared-streamlit-session",
+    )
+    viewer_request = ChatRequest(
+        user_id="viewer-demo-user",
+        role="viewer",
+        message="What are the steps for card network failover?",
+        session_id="shared-streamlit-session",
+    )
+
+    admin_response = asyncio.run(run_assistant(admin_request))
+    viewer_response = asyncio.run(run_assistant(viewer_request))
+
+    assert "Card Network Failover Runbook" in admin_response.answer
+    assert "Card Network Failover Runbook" not in viewer_response.answer
+    assert "Conversation memory used:" not in viewer_response.answer
+
+
 def test_viewer_gets_graceful_unauthorized_response_for_analytics() -> None:
     """The graph should not let Viewer trigger analytics tools."""
 
@@ -207,6 +236,27 @@ def test_viewer_gets_graceful_unauthorized_response_for_analytics() -> None:
         entry["node"] for entry in response.agent_activity.activity_log
     ]
     assert "tool authorization failed" in response.agent_activity.validation_results
+
+
+def test_viewer_cannot_access_card_network_failover_steps() -> None:
+    """Viewer should not receive restricted operational procedure details."""
+
+    request = ChatRequest(
+        user_id="viewer-1",
+        role="viewer",
+        message="What are the steps for card network failover?",
+        session_id="viewer-session",
+    )
+
+    response = asyncio.run(run_assistant(request))
+
+    assert response.agent_activity.current_state == "blocked"
+    assert response.citations == []
+    assert response.agent_activity.tool_calls == []
+    assert "restricted operational procedures" in response.answer
+    assert "Lower traffic weight" not in response.answer
+    assert "Card Network Failover Runbook" not in response.answer
+    assert "restricted operation authorization failed" in response.agent_activity.validation_results
 
 
 def test_viewer_gets_graceful_unauthorized_response_for_mcp() -> None:
@@ -306,6 +356,55 @@ def test_response_generation_failure_returns_fallback(monkeypatch, caplog) -> No
     assert "llm provider failed" not in response.answer
     assert any(record.component == "agent" for record in caplog.records)
     assert any(record.fallback == "safe_llm_fallback_message" for record in caplog.records)
+
+
+def test_gemini_success_returns_llm_answer_with_valid_citations(monkeypatch) -> None:
+    """Gemini success should replace deterministic text while citations stay retrieved."""
+
+    async def successful_llm_answer(*args: Any, **kwargs: Any) -> str:
+        _ = args
+        citations = kwargs["citations"]
+        return f"Gemini grounded answer [chunk_id: {citations[0].chunk_id}]"
+
+    monkeypatch.setattr(graph, "generate_llm_answer", successful_llm_answer)
+
+    request = ChatRequest(
+        user_id="analyst-1",
+        role="analyst",
+        message="Summarize payment outage incidents.",
+        session_id="gemini-success-session",
+    )
+
+    response = asyncio.run(run_assistant(request))
+
+    assert response.answer.startswith("Gemini grounded answer")
+    assert "gemini generation completed" in response.agent_activity.validation_results
+    assert response.citations
+    assert all(citation.chunk_id for citation in response.citations)
+    assert "not-retrieved" not in {citation.chunk_id for citation in response.citations}
+
+
+def test_gemini_failure_uses_deterministic_fallback(monkeypatch) -> None:
+    """Gemini returning no answer should keep the deterministic fallback."""
+
+    async def failed_llm_answer(*args: Any, **kwargs: Any) -> None:
+        _ = (args, kwargs)
+        return None
+
+    monkeypatch.setattr(graph, "generate_llm_answer", failed_llm_answer)
+
+    request = ChatRequest(
+        user_id="analyst-1",
+        role="analyst",
+        message="Summarize payment outage incidents.",
+        session_id="gemini-failure-session",
+    )
+
+    response = asyncio.run(run_assistant(request))
+
+    assert response.answer.startswith("Here is a grounded summary")
+    assert "gemini fallback used" in response.agent_activity.validation_results
+    assert "Traceback" not in response.answer
 
 
 def test_citation_validation_blocks_unretrieved_citation() -> None:
