@@ -13,23 +13,98 @@ and traceability while still demonstrating a real LLM call.
 ## Component Map
 
 ```mermaid
-flowchart TD
-    U["User"] --> FE["Streamlit frontend"]
-    FE --> API["FastAPI /chat"]
-    API --> RL["Per-user rate limiter"]
-    API --> RBAC["Role validation"]
-    RBAC --> G["LangGraph assistant graph"]
-    G --> SEC["Security node"]
-    G --> PLAN["Planning / simplified RLM node"]
-    G --> TOOL["Tool layer"]
-    TOOL --> RET["Hybrid retriever interface"]
-    RET --> LOCAL["Local JSONL + BM25 + dense score"]
-    RET --> PC["Optional Pinecone adapter"]
-    PC --> LOCAL
-    G --> MEM["Session memory"]
-    G --> RESP["Response + citation validation"]
-    G --> LS["LangSmith traces"]
-    API --> FE
+flowchart TB
+    U["Bank employee"] --> FE["Streamlit chat + activity panel"]
+
+    subgraph API["FastAPI boundary"]
+        STREAM["POST /chat/stream<br/>NDJSON activity + answer events"]
+        CHAT["POST /chat<br/>non-streaming fallback"]
+        VALIDATE["Pydantic request validation"]
+        RATE["Per-user token bucket"]
+        ROLE["Role validation"]
+        INIT["Load session memory<br/>build AssistantState"]
+        STREAM --> VALIDATE
+        CHAT --> VALIDATE
+        VALIDATE --> RATE --> ROLE --> INIT
+    end
+
+    FE --> STREAM
+    FE -. "stream failure" .-> CHAT
+
+    subgraph GRAPH["LangGraph assistant workflow"]
+        SUP["Supervisor<br/>classify intent"]
+        SEC["Security<br/>input, injection, RBAC checks"]
+        PLAN["Planning<br/>direct or simplified RLM plan"]
+        RECURSE["Recursive search<br/>max_depth = 2"]
+        RETNODE["Retrieval node"]
+        ANALYZE["Analysis node<br/>aggregate evidence"]
+        RESPONSE["Response node"]
+        GEMINI["Gemini 2.5 Flash<br/>grounded answer"]
+        FALLBACK["Deterministic answer fallback"]
+        CITE["Citation validation node"]
+
+        INIT --> SUP --> SEC
+        SEC -->|"allowed"| PLAN
+        SEC -->|"blocked"| RESPONSE
+        PLAN -->|"narrow question"| RETNODE
+        PLAN -->|"broad question"| RECURSE --> RETNODE
+        RETNODE --> ANALYZE --> RESPONSE
+        RESPONSE --> FALLBACK
+        RESPONSE -->|"eligible request"| GEMINI
+        GEMINI -. "missing key, failure, or timeout" .-> FALLBACK
+        GEMINI --> CITE
+        FALLBACK --> CITE
+    end
+
+    subgraph TOOLS["Permission-checked tools"]
+        SEARCH["knowledge_search_tool"]
+        MCP["dummy MCP-style enterprise data"]
+        PYTHON["python_analysis_tool<br/>implemented, not graph-routed"]
+    end
+
+    RETNODE --> SEARCH
+    RETNODE -. "optional request" .-> MCP
+    PYTHON -. "future analytics route" .-> ANALYZE
+
+    subgraph RETRIEVAL["Hybrid retrieval"]
+        INTERFACE["Retriever interface"]
+        PINECONE["PineconeHybridRetriever<br/>namespace + metadata filters"]
+        LOCAL["LocalHybridRetriever<br/>hash dense score + BM25"]
+        RESULTS["Role-filtered chunks<br/>with document attribution"]
+        INTERFACE -->|"configured backend"| PINECONE
+        INTERFACE -->|"local mode"| LOCAL
+        PINECONE -. "unavailable" .-> LOCAL
+        PINECONE --> RESULTS
+        LOCAL --> RESULTS
+    end
+
+    SEARCH --> INTERFACE
+    RESULTS --> RETNODE
+
+    subgraph INGEST["Document ingestion"]
+        DOCS["Mock bank Markdown documents"]
+        PARSE["Parse YAML metadata"]
+        CHUNK["Paragraph-aware chunking<br/>stable document + chunk IDs"]
+        JSONL["Local JSONL chunk store"]
+        VECTORIZE["Hash dense vectors<br/>+ sparse vectors"]
+        UPSERT["Manual Pinecone batch upsert"]
+        DOCS --> PARSE --> CHUNK --> JSONL
+        JSONL --> VECTORIZE --> UPSERT --> PINECONE
+        JSONL --> LOCAL
+    end
+
+    CITE --> MEMORY["Save and summarize<br/>in-memory session history"]
+    MEMORY --> EVENTS["Answer + citations<br/>agent activity + memory updates"]
+    EVENTS --> STREAM
+    EVENTS --> CHAT
+    STREAM --> FE
+    CHAT --> FE
+
+    LS["LangSmith traces<br/>graph, Gemini, tools, retrieval"]
+    SUP -.-> LS
+    GEMINI -.-> LS
+    SEARCH -.-> LS
+    INTERFACE -.-> LS
 ```
 
 ## Backend Request Flow
