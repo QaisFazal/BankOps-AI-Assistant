@@ -13,6 +13,7 @@ The project demonstrates:
 - Hardcoded RBAC
 - Prompt-injection guardrails
 - Session-based conversational memory
+- Gemini question contextualization for history-aware retrieval
 - Tool layer with permission checks
 - Google Gemini response generation with deterministic fallback
 - LangSmith tracing for graph runs, tools, and retrieval
@@ -59,6 +60,8 @@ For Gemini answer generation, set:
 ```env
 GEMINI_API_KEY=your_key
 GEMINI_MODEL=gemini-2.5-flash
+CONTEXTUALIZATION_MODEL=gemini-2.5-flash
+CONTEXTUALIZATION_CONFIDENCE_THRESHOLD=0.75
 EMBEDDING_PROVIDER=gemini
 GEMINI_EMBEDDING_MODEL=gemini-embedding-2
 EMBEDDING_DIMENSIONS=768
@@ -174,6 +177,7 @@ Run a chat request, then open LangSmith and inspect:
 
 ```text
 langgraph_assistant_run
+contextualize_question
 gemini_generate_answer
 knowledge_search_tool
 hybrid_retrieval

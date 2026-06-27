@@ -1,9 +1,4 @@
-"""LangGraph workflow for the assistant.
-
-The graph is still model-free: it uses rules and retrieved chunks to produce a
-simple grounded answer. The important part for this milestone is that each step
-has a clear node, state update, and activity log entry.
-"""
+"""LangGraph workflow for the assistant."""
 
 import logging
 import re
@@ -13,7 +8,12 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.memory.store import get_conversation_history, save_conversation_turn
+from app.config import get_settings
+from app.memory.store import (
+    get_active_topic,
+    get_conversation_history,
+    save_conversation_turn,
+)
 from app.models.chat import AgentActivity, ChatRequest, ChatResponse, Citation
 from app.models.documents import RetrievedDocument
 from app.observability.tracing import build_run_metadata, set_trace_outputs, trace_run
@@ -22,6 +22,10 @@ from app.security.guardrails import (
     GuardrailViolation,
     detect_prompt_injection,
     validate_user_question,
+)
+from app.services.contextualization_service import (
+    ContextualizedQuestion,
+    contextualize_question,
 )
 from app.services.llm_service import generate_answer as generate_llm_answer
 from app.tools.dummy_mcp import dummy_mcp_tool
@@ -64,7 +68,13 @@ class AssistantState(TypedDict):
     role: str
     session_id: str
     question: str
+    standalone_question: str
     conversation_history: list[str]
+    active_topic: str | None
+    contextualization_confidence: float
+    contextualization_source: str
+    needs_clarification: bool
+    clarification_question: str | None
     intent: str
     search_plan: SearchPlan | None
     max_depth: int
@@ -117,9 +127,56 @@ RESTRICTED_OPERATION_MARKERS = {
     "card network failover": "Card network failover procedures are restricted operational content.",
 }
 
+FALLBACK_FOLLOW_UP_PATTERN = re.compile(
+    r"\b(it|its|they|their|them|that|this|those|these)\b"
+    r"|^(what|which|why|how|when|who)\b",
+    re.IGNORECASE,
+)
+
 ROOT = Path(__file__).resolve().parents[3]
 SAMPLE_DOCS_ROOT = ROOT / "sample_docs"
 logger = logging.getLogger(__name__)
+
+
+def fallback_contextualization(
+    question: str,
+    conversation_history: list[str],
+    active_topic: str | None,
+) -> ContextualizedQuestion:
+    """Provide a small deterministic fallback when Gemini rewriting is unavailable."""
+
+    if not conversation_history:
+        return ContextualizedQuestion(
+            is_follow_up=False,
+            standalone_question=question,
+            active_topic=question[:240],
+            confidence=1.0,
+        )
+
+    inferred_topic = active_topic
+    if not inferred_topic:
+        recent_user_questions = [
+            item.removeprefix("User: ").strip()
+            for item in conversation_history
+            if item.startswith("User: ")
+        ]
+        inferred_topic = recent_user_questions[-1] if recent_user_questions else None
+
+    is_follow_up = bool(inferred_topic and FALLBACK_FOLLOW_UP_PATTERN.search(question))
+    if is_follow_up:
+        return ContextualizedQuestion(
+            is_follow_up=True,
+            standalone_question=f"{question} Subject: {inferred_topic}",
+            active_topic=inferred_topic,
+            confidence=0.8,
+        )
+
+    return ContextualizedQuestion(
+        is_follow_up=False,
+        standalone_question=question,
+        active_topic=question[:240],
+        confidence=0.8,
+    )
 
 
 def append_activity(
@@ -420,16 +477,16 @@ def run_optional_mcp_tool(state: AssistantState) -> list[dict[str, Any]]:
 
 
 async def supervisor_node(state: AssistantState) -> AssistantState:
-    """Classify intent and decide that the request should enter the safety path."""
+    """Classify the standalone question after safety and contextualization."""
 
-    state["intent"] = classify_intent(state["question"])
+    state["intent"] = classify_intent(state["standalone_question"])
     history_count = len(state["conversation_history"])
     return append_activity(
         state,
         "supervisor_node",
         "completed",
         (
-            f"Classified intent as {state['intent']} and routed to security_node. "
+            f"Classified intent as {state['intent']} and routed to planning_node. "
             f"Loaded {history_count} memory item(s)."
         ),
     )
@@ -532,13 +589,119 @@ async def security_node(state: AssistantState) -> AssistantState:
     )
 
 
-def route_after_security(state: AssistantState) -> Literal["planning_node", "response_node"]:
-    """Skip retrieval when security has already blocked the request."""
+def route_after_security(
+    state: AssistantState,
+) -> Literal["contextualization_node", "response_node"]:
+    """Skip all model and retrieval work when security blocks the original request."""
 
     if state["errors"]:
         return "response_node"
 
-    return "planning_node"
+    return "contextualization_node"
+
+
+async def contextualization_node(state: AssistantState) -> AssistantState:
+    """Rewrite conversational follow-ups into safe standalone retrieval questions."""
+
+    result = await contextualize_question(
+        question=state["question"],
+        conversation_history=state["conversation_history"],
+        active_topic=state["active_topic"],
+        user_id=state["user_id"],
+        role=state["role"],
+        session_id=state["session_id"],
+    )
+    source = "gemini" if result is not None else "deterministic_fallback"
+    if result is None:
+        result = fallback_contextualization(
+            state["question"],
+            state["conversation_history"],
+            state["active_topic"],
+        )
+
+    try:
+        validate_user_question(result.standalone_question)
+        if detect_prompt_injection(result.standalone_question):
+            raise GuardrailViolation("Contextualized question failed security validation.")
+    except GuardrailViolation:
+        result = fallback_contextualization(
+            state["question"],
+            state["conversation_history"],
+            state["active_topic"],
+        )
+        source = "security_validated_fallback"
+
+    state["standalone_question"] = result.standalone_question
+    state["active_topic"] = result.active_topic
+    state["contextualization_confidence"] = result.confidence
+    state["contextualization_source"] = source
+
+    restricted_tool = requested_restricted_tool(result.standalone_question)
+    if restricted_tool and not can_execute_tool(restricted_tool, state["role"]):
+        state["errors"].append(
+            f"Unauthorized: role {state['role']} cannot execute {restricted_tool}."
+        )
+        state["validation_results"].append("contextualized tool authorization failed")
+        return append_activity(
+            state,
+            "contextualization_node",
+            "blocked",
+            f"Standalone question requested unauthorized tool {restricted_tool}.",
+        )
+
+    restricted_operation = requested_restricted_operation(result.standalone_question)
+    if restricted_operation and state["role"] != "administrator":
+        state["errors"].append(
+            f"Unauthorized: role {state['role']} cannot access restricted operation details."
+        )
+        state["validation_results"].append(
+            "contextualized restricted operation authorization failed"
+        )
+        return append_activity(
+            state,
+            "contextualization_node",
+            "blocked",
+            restricted_operation,
+        )
+
+    threshold = get_settings().contextualization_confidence_threshold
+    if result.confidence < threshold:
+        state["needs_clarification"] = True
+        state["clarification_question"] = result.clarification_question or (
+            "Could you clarify which incident, document, or service you mean?"
+        )
+        state["validation_results"].append("contextualization needs clarification")
+        return append_activity(
+            state,
+            "contextualization_node",
+            "needs_clarification",
+            f"Rewrite confidence {result.confidence:.2f} was below {threshold:.2f}.",
+        )
+
+    state["validation_results"].append(
+        f"contextualization completed via {source}"
+    )
+    if result.is_follow_up:
+        state["validation_results"].append("follow-up query contextualized from memory")
+    return append_activity(
+        state,
+        "contextualization_node",
+        "completed",
+        (
+            f"Prepared standalone retrieval question with confidence "
+            f"{result.confidence:.2f} via {source}."
+        ),
+    )
+
+
+def route_after_contextualization(
+    state: AssistantState,
+) -> Literal["supervisor_node", "response_node"]:
+    """Request clarification without running retrieval when the subject is ambiguous."""
+
+    if state["errors"] or state["needs_clarification"]:
+        return "response_node"
+    return "supervisor_node"
 
 
 async def planning_node(state: AssistantState) -> AssistantState:
@@ -553,7 +716,10 @@ async def planning_node(state: AssistantState) -> AssistantState:
             "Question is narrow; using direct retrieval.",
         )
 
-    state["search_plan"] = generate_search_plan(state["question"], state["intent"])
+    state["search_plan"] = generate_search_plan(
+        state["standalone_question"],
+        state["intent"],
+    )
     plan = state["search_plan"]
     return append_activity(
         state,
@@ -586,7 +752,7 @@ async def retrieval_node(state: AssistantState) -> AssistantState:
         state["tool_calls"].append("knowledge_search_tool")
         try:
             state["retrieval_results"] = await knowledge_search_tool(
-                state["question"],
+                state["standalone_question"],
                 role=state["role"],
                 top_k=3,
                 user_id=state["user_id"],
@@ -979,6 +1145,18 @@ def build_answer(
 async def response_node(state: AssistantState) -> AssistantState:
     """Generate the final answer with citations."""
 
+    if state["needs_clarification"]:
+        state["citations"] = []
+        state["final_answer"] = state["clarification_question"] or (
+            "Could you clarify which subject you mean?"
+        )
+        return append_activity(
+            state,
+            "response_node",
+            "needs_clarification",
+            "Returned a clarification question without running retrieval.",
+        )
+
     state["citations"] = [
         Citation(
             document_id=result.document_id or result.id,
@@ -1126,6 +1304,8 @@ def persist_memory_after_run(state: AssistantState) -> AssistantState:
         session_id=memory_key,
         question=state["question"],
         answer=state["final_answer"],
+        standalone_question=state["standalone_question"],
+        active_topic=state["active_topic"],
     )
     state["memory_updates"].extend(updates)
     state["conversation_history"] = get_conversation_history(memory_key)
@@ -1140,24 +1320,33 @@ def build_assistant_graph():
     """Build and compile the assistant LangGraph workflow."""
 
     graph = StateGraph(AssistantState)
-    graph.add_node("supervisor_node", supervisor_node)
     graph.add_node("security_node", security_node)
+    graph.add_node("contextualization_node", contextualization_node)
+    graph.add_node("supervisor_node", supervisor_node)
     graph.add_node("planning_node", planning_node)
     graph.add_node("retrieval_node", retrieval_node)
     graph.add_node("analysis_node", analysis_node)
     graph.add_node("response_node", response_node)
     graph.add_node("citation_validation_node", citation_validation_node)
 
-    graph.add_edge(START, "supervisor_node")
-    graph.add_edge("supervisor_node", "security_node")
+    graph.add_edge(START, "security_node")
     graph.add_conditional_edges(
         "security_node",
         route_after_security,
         {
-            "planning_node": "planning_node",
+            "contextualization_node": "contextualization_node",
             "response_node": "response_node",
         },
     )
+    graph.add_conditional_edges(
+        "contextualization_node",
+        route_after_contextualization,
+        {
+            "supervisor_node": "supervisor_node",
+            "response_node": "response_node",
+        },
+    )
+    graph.add_edge("supervisor_node", "planning_node")
     graph.add_edge("planning_node", "retrieval_node")
     graph.add_edge("retrieval_node", "analysis_node")
     graph.add_edge("analysis_node", "response_node")
@@ -1175,6 +1364,7 @@ def initial_state_from_request(request: ChatRequest) -> AssistantState:
 
     memory_key = memory_key_for_user(request.session_id, request.user_id, request.role)
     conversation_history = get_conversation_history(memory_key)
+    active_topic = get_active_topic(memory_key)
     memory_message = (
         f"Loaded {len(conversation_history)} memory item(s) for this user and role."
         if conversation_history
@@ -1185,7 +1375,13 @@ def initial_state_from_request(request: ChatRequest) -> AssistantState:
         "role": request.role,
         "session_id": request.session_id,
         "question": request.message,
+        "standalone_question": request.message,
         "conversation_history": conversation_history,
+        "active_topic": active_topic,
+        "contextualization_confidence": 1.0,
+        "contextualization_source": "not_run",
+        "needs_clarification": False,
+        "clarification_question": None,
         "intent": "",
         "search_plan": None,
         "max_depth": 2,
@@ -1227,7 +1423,15 @@ def activity_from_state(state: AssistantState) -> AgentActivity:
             f"aggregation_strategy: {search_plan['aggregation_strategy']}",
         ]
 
-    if state["errors"] and has_blocking_security_error(state["errors"]):
+    contextualization_summary = [
+        f"contextualization_source: {state['contextualization_source']}",
+        f"contextualization_confidence: {state['contextualization_confidence']:.2f}",
+        f"standalone_question: {state['standalone_question']}",
+    ]
+
+    if state["needs_clarification"]:
+        current_state = "needs_clarification"
+    elif state["errors"] and has_blocking_security_error(state["errors"]):
         current_state = "blocked"
     elif state["errors"]:
         current_state = "completed_with_warnings"
@@ -1238,8 +1442,16 @@ def activity_from_state(state: AssistantState) -> AgentActivity:
         current_state=current_state,
         active_node=active_node,
         tool_calls=state["tool_calls"],
-        retrieval_status=f"completed: retrieved {retrieval_count} chunk(s)",
-        validation_results=state["validation_results"] + planning_summary,
+        retrieval_status=(
+            "not run: clarification required"
+            if state["needs_clarification"]
+            else f"completed: retrieved {retrieval_count} chunk(s)"
+        ),
+        validation_results=(
+            state["validation_results"]
+            + contextualization_summary
+            + planning_summary
+        ),
         memory_updates=state["memory_updates"],
         activity_log=state["activity_log"],
         errors=state["errors"],

@@ -19,15 +19,17 @@ flowchart LR
     API --> GATE["Validate request<br/>rate limit + role check"]
 
     subgraph GRAPH["LangGraph workflow"]
-        SUP["1. Classify intent"] --> SEC["2. Security checks"]
-        SEC -->|"allowed"| PLAN["3. Plan search"]
-        PLAN --> RET["4. Retrieve evidence"]
-        ANALYZE["5. Analyze evidence"] --> RESP["6. Generate answer<br/>Gemini + fallback"]
+        SEC["1. Security checks"] -->|"allowed"| CONTEXT["2. Rewrite follow-up"]
+        CONTEXT -->|"confident"| SUP["3. Classify intent"]
+        SUP --> PLAN["4. Plan search"]
+        PLAN --> RET["5. Retrieve evidence"]
+        ANALYZE["6. Analyze evidence"] --> RESP["7. Generate answer<br/>Gemini + fallback"]
         SEC -->|"blocked"| RESP
-        RESP --> CITE["7. Validate citations"]
+        CONTEXT -->|"ambiguous"| RESP
+        RESP --> CITE["8. Validate citations"]
     end
 
-    GATE --> SUP
+    GATE --> SEC
     RET --> SEARCH["Permission-checked<br/>hybrid search"]
     SEARCH --> STORE["Pinecone<br/>with local fallback"]
     STORE --> ANALYZE
@@ -35,7 +37,7 @@ flowchart LR
     MEMORY --> UI
 
     LS["LangSmith tracing"]
-    SUP -.-> LS
+    CONTEXT -.-> LS
     SEARCH -.-> LS
     RESP -.-> LS
 ```
@@ -60,15 +62,18 @@ flowchart LR
 2. FastAPI validates the Pydantic request model.
 3. The backend applies per-user token bucket rate limiting.
 4. The backend validates the caller role.
-5. LangGraph loads session memory and runs the assistant workflow.
-6. Guardrails check input length, prompt injection patterns, tool abuse, metadata
-   filter escalation, and citation validity.
-7. The graph optionally creates a simplified recursive search plan for broad
+5. LangGraph loads structured session memory.
+6. Guardrails inspect the original message before any model-based rewriting.
+7. The contextualization node uses Gemini structured output to create a
+   standalone retrieval question and active topic. Low-confidence references
+   return a clarification question without retrieval.
+8. The graph optionally creates a simplified recursive search plan for broad
    questions.
-8. Retrieval runs through the tool layer so RBAC cannot be bypassed.
-9. The response node formats grounded summaries with citations.
-10. Session memory stores the latest turn and summarizes older turns when needed.
-11. FastAPI returns the answer, citations, and agent activity for the Streamlit
+9. Retrieval runs through the tool layer so RBAC cannot be bypassed.
+10. The response node formats grounded summaries with citations.
+11. Session memory stores the original question, standalone question, active
+    topic, and answer, and summarizes older turns when needed.
+12. FastAPI returns the answer, citations, and agent activity for the Streamlit
     sidebar.
 
 ## Streaming Flow
@@ -96,20 +101,32 @@ tokens are streamed to the UI but are not emitted directly by the Gemini SDK.
 ## LangGraph Nodes
 
 The graph state carries `user_id`, `role`, `session_id`, `question`,
-`conversation_history`, `intent`, `search_plan`, `retrieval_results`,
-`tool_calls`, `analysis_result`, `validation_results`, `final_answer`,
-`activity_log`, `errors`, and `citations`.
+`standalone_question`, `conversation_history`, `active_topic`, contextualization
+confidence and source, `intent`, `search_plan`, `retrieval_results`, `tool_calls`,
+`analysis_result`, `validation_results`, `final_answer`, `activity_log`, `errors`,
+and `citations`.
+
+### `security_node`
+
+Runs guardrails on the original user message before contextualization or
+retrieval. It validates input length, detects prompt injection, and blocks
+unauthorized requests for restricted tools.
+
+### `contextualization_node`
+
+Uses Gemini structured output to classify follow-ups, create a standalone
+retrieval question, update the active topic, and assign confidence. A result
+below `CONTEXTUALIZATION_CONFIDENCE_THRESHOLD` asks the user to clarify instead
+of guessing. Missing credentials or provider failures use a small deterministic
+fallback. The standalone result is checked against server-side tool and
+restricted-operation permissions before retrieval. The model cannot change
+roles, filters, namespaces, or permissions.
 
 ### `supervisor_node`
 
 Classifies the request intent using deterministic keyword rules. Example intents
 include `incident_support`, `runbook_lookup`, `policy_lookup`,
 `architecture_lookup`, and `meeting_summary`.
-
-### `security_node`
-
-Runs guardrails before retrieval. It validates input length, detects prompt
-injection, and blocks unauthorized requests for restricted tools.
 
 ### `planning_node`
 

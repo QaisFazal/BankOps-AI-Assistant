@@ -19,6 +19,8 @@ class ConversationTurn:
 
     question: str
     answer: str
+    standalone_question: str | None = None
+    active_topic: str | None = None
 
 
 @dataclass
@@ -27,6 +29,7 @@ class SessionMemory:
 
     summary: str | None = None
     turns: list[ConversationTurn] = field(default_factory=list)
+    active_topic: str | None = None
 
 
 _memory_by_session: dict[str, SessionMemory] = {}
@@ -92,13 +95,37 @@ def get_conversation_summary(session_id: str) -> str:
     return " | ".join(history)
 
 
-def save_conversation_turn(session_id: str, question: str, answer: str) -> list[str]:
+def get_active_topic(session_id: str) -> str | None:
+    """Return the latest structured topic for contextual retrieval."""
+
+    with _memory_lock:
+        memory = _memory_by_session.get(session_id)
+        return memory.active_topic if memory is not None else None
+
+
+def save_conversation_turn(
+    session_id: str,
+    question: str,
+    answer: str,
+    *,
+    standalone_question: str | None = None,
+    active_topic: str | None = None,
+) -> list[str]:
     """Store one turn and summarize older memory when it grows too long."""
 
     updates = [f"Stored latest turn for session {session_id}."]
     with _memory_lock:
         memory = _memory_by_session.setdefault(session_id, SessionMemory())
-        memory.turns.append(ConversationTurn(question=question, answer=answer))
+        memory.turns.append(
+            ConversationTurn(
+                question=question,
+                answer=answer,
+                standalone_question=standalone_question,
+                active_topic=active_topic,
+            )
+        )
+        if active_topic:
+            memory.active_topic = active_topic
 
         if len(memory.turns) > MAX_TURNS_BEFORE_SUMMARY:
             memory.summary = _summarize_memory(memory)

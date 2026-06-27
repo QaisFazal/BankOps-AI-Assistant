@@ -2,8 +2,10 @@
 
 from app.memory.store import (
     MAX_TURNS_BEFORE_SUMMARY,
+    get_active_topic,
     get_conversation_history,
     get_conversation_summary,
+    get_session_memory,
     reset_memory_store,
     save_conversation_turn,
 )
@@ -28,6 +30,25 @@ def test_memory_stores_questions_and_answers_by_session() -> None:
     assert "Assistant: Answer A." in history_a
     assert "User: Question B?" not in history_a
     assert "User: Question B?" in history_b
+
+
+def test_memory_stores_active_topic_and_standalone_question() -> None:
+    """Structured conversational fields should survive between turns."""
+
+    save_conversation_turn(
+        "session-a",
+        "What was its impact?",
+        "Customers experienced delays.",
+        standalone_question="What was the impact of the payment gateway incident?",
+        active_topic="Payment Gateway Timeout Incident",
+    )
+
+    memory = get_session_memory("session-a")
+
+    assert get_active_topic("session-a") == "Payment Gateway Timeout Incident"
+    assert memory.turns[0].standalone_question == (
+        "What was the impact of the payment gateway incident?"
+    )
 
 
 def test_memory_summarizes_when_too_long() -> None:

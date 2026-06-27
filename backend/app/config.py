@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
+    contextualization_model: str = "gemini-2.5-flash"
+    contextualization_confidence_threshold: float = 0.75
     embedding_provider: str = "gemini"
     gemini_embedding_model: str = "gemini-embedding-2"
     embedding_dimensions: int = 768

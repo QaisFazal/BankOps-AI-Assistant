@@ -25,6 +25,8 @@ The backend creates these trace spans:
 - `langgraph_assistant_stream`: the top-level assistant run for one `/chat/stream`
   request.
 - `gemini_generate_answer`: the Gemini final-answer generation call.
+- `contextualize_question`: structured follow-up rewriting with confidence and
+  active-topic output.
 - `knowledge_search_tool`: the server-side search tool call.
 - `hybrid_retrieval`: the local or Pinecone-backed retrieval operation.
 - `python_analysis_tool`: structured incident analytics when invoked directly;
@@ -60,6 +62,10 @@ debug why a response used a specific source.
 
 6. Inspect child runs for tool calls and retrieval. Check metadata filters such
    as `user_id`, `role`, and `session_id` when debugging a specific conversation.
+
+For a follow-up question, open `contextualize_question` and inspect
+`standalone_question`, `active_topic`, `confidence`, and `is_follow_up`. Low
+confidence should produce a clarification response with no retrieval child run.
 
 ## Verify Gemini Generation
 

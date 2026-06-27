@@ -41,6 +41,9 @@ policy engines, audit records, and centralized access management.
 Session memory is process-local and keyed by `session_id`. It is fast and simple,
 but it is lost on restart and not shared across multiple backend instances.
 Production memory should use durable encrypted storage with retention controls.
+Each turn stores the original question, standalone retrieval question, active
+topic, and answer. Gemini performs structured follow-up rewriting; ambiguous
+references ask for clarification, with deterministic rewriting as fallback.
 
 ### Simplified RLM
 
@@ -68,6 +71,8 @@ without a Gemini key still produce template-style answers.
   caching them.
 - Gemini embedding availability, quotas, latency, and cost affect semantic
   retrieval.
+- Gemini contextualization adds one model call for conversational turns with
+  history. Provider failure uses a less capable deterministic fallback.
 - Streaming emits live graph activity, then splits the completed Gemini answer
   into token events rather than using provider-native token streaming.
 - The analytics tool is implemented and tested but is not yet invoked by the

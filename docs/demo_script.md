@@ -154,8 +154,10 @@ Open `backend/app/agents/graph.py`.
 
 Explain the nodes:
 
-- `supervisor_node`: classifies intent.
-- `security_node`: checks prompt injection and tool abuse.
+- `security_node`: checks the original message before any model rewrite.
+- `contextualization_node`: rewrites follow-ups into standalone retrieval
+  questions and asks for clarification when confidence is low.
+- `supervisor_node`: classifies the standalone question's intent.
 - `planning_node`: creates a bounded recursive search plan for broad questions.
 - `retrieval_node`: calls tools and retrievers.
 - `analysis_node`: summarizes retrieved evidence.
@@ -164,6 +166,17 @@ Explain the nodes:
 
 Show the Streamlit sidebar activity log and connect each log entry back to a
 LangGraph node.
+
+Demonstrate a multi-turn retrieval sequence:
+
+```text
+Summarize the payment gateway timeout incident.
+What was its customer impact?
+Which remediation actions were recommended?
+```
+
+Show the standalone question, active topic, confidence, and
+`contextualize_question` LangSmith trace.
 
 ## 25:00-30:00 - Simplified RLM Planning
 
@@ -266,7 +279,8 @@ In LangSmith, open the project and inspect a `langgraph_assistant_run`.
 Show:
 
 - Graph run metadata: `user_id`, `role`, `session_id`.
-- Child runs: `gemini_generate_answer`, `knowledge_search_tool`, `hybrid_retrieval`.
+- Child runs: `contextualize_question`, `gemini_generate_answer`,
+  `knowledge_search_tool`, and `hybrid_retrieval`.
 - Tool/retrieval outputs such as result counts and source files.
 - Gemini output preview and context count.
 - Failed tool or guardrail traces if available.
