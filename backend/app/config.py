@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Typed settings shared across the backend."""
 
-    app_name: str = "AI Lead Assistant"
+    app_name: str = "BankOps AI Assistant"
     environment: str = "local"
     backend_cors_origins: str = "http://localhost:8501"
     rate_limit_capacity: int = 60
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-1.5-flash"
     langsmith_api_key: str | None = None
-    langsmith_project: str = "ai-lead-assistant"
+    langsmith_project: str = "bankops-ai-assistant"
     langsmith_tracing: bool = False
 
     retrieval_backend: str = "local"

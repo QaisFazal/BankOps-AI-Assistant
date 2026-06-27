@@ -1,6 +1,6 @@
 # Architecture Overview
 
-AI Lead Assistant is a prototype enterprise AI assistant for a commercial bank.
+BankOps AI Assistant is a prototype enterprise AI assistant for a commercial bank.
 It demonstrates a secure Retrieval-Augmented Generation workflow with FastAPI,
 Streamlit, LangGraph, local hybrid retrieval, a Pinecone retrieval adapter,
 hardcoded RBAC, prompt-injection guardrails, session memory, and LangSmith
@@ -172,7 +172,7 @@ Pinecone is configured with:
 ```env
 RETRIEVAL_BACKEND=pinecone
 PINECONE_API_KEY=
-PINECONE_INDEX_NAME=ai-lead-assistant
+PINECONE_INDEX_NAME=bankops-ai-assistant
 PINECONE_NAMESPACE=local
 PINECONE_NAMESPACE_MODE=environment
 ```
@@ -318,7 +318,7 @@ Enable tracing in `.env`:
 ```env
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=your_key
-LANGSMITH_PROJECT=ai-lead-assistant
+LANGSMITH_PROJECT=bankops-ai-assistant
 ```
 
 Open LangSmith, select the project, and inspect `langgraph_assistant_run` traces

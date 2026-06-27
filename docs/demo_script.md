@@ -252,7 +252,7 @@ Show `.env` settings without revealing the API key:
 ```env
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=...
-LANGSMITH_PROJECT=ai-lead-assistant
+LANGSMITH_PROJECT=bankops-ai-assistant
 ```
 
 In LangSmith, open the project and inspect a `langgraph_assistant_run`.

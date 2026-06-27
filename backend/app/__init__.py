@@ -1,1 +1,1 @@
-"""Backend package for the AI Lead Assistant assignment."""
+"""Backend package for the BankOps AI Assistant assignment."""

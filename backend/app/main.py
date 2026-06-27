@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for the AI Lead Assistant backend."""
+"""FastAPI entrypoint for the BankOps AI Assistant backend."""
 
 import logging
 from time import perf_counter

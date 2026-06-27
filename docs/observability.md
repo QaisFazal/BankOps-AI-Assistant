@@ -10,7 +10,7 @@ Copy `.env.example` to `.env` and fill in your LangSmith API key:
 ```env
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=your_langsmith_api_key
-LANGSMITH_PROJECT=ai-lead-assistant
+LANGSMITH_PROJECT=bankops-ai-assistant
 ```
 
 Tracing is only sent to LangSmith when both `LANGSMITH_TRACING=true` and
@@ -52,7 +52,7 @@ debug why a response used a specific source.
 
 3. Open [LangSmith](https://smith.langchain.com/).
 
-4. Select the `ai-lead-assistant` project.
+4. Select the `bankops-ai-assistant` project.
 
 5. Open a `langgraph_assistant_run` trace.
 

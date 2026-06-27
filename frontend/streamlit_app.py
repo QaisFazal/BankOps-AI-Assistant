@@ -1,4 +1,4 @@
-"""Streamlit frontend for the AI Lead Assistant demo."""
+"""Streamlit frontend for the BankOps AI Assistant demo."""
 
 import json
 import os
@@ -15,8 +15,8 @@ BACKEND_STREAM_URL = os.getenv(
 )
 
 
-st.set_page_config(page_title="AI Lead Assistant", layout="centered")
-st.title("AI Lead Assistant")
+st.set_page_config(page_title="BankOps AI Assistant", layout="centered")
+st.title("BankOps AI Assistant")
 st.caption("Assignment scaffold: FastAPI + Streamlit + LangGraph + Pinecone + LangSmith")
 
 if "messages" not in st.session_state:

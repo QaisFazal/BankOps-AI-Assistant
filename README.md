@@ -1,4 +1,4 @@
-# AI Lead Assistant
+# BankOps AI Assistant
 
 Enterprise AI assistant prototype for a commercial bank assignment.
 
@@ -87,7 +87,7 @@ Then set `.env`:
 ```env
 RETRIEVAL_BACKEND=pinecone
 PINECONE_API_KEY=your_key
-PINECONE_INDEX_NAME=ai-lead-assistant
+PINECONE_INDEX_NAME=bankops-ai-assistant
 PINECONE_NAMESPACE=local
 PINECONE_NAMESPACE_MODE=environment
 ```
@@ -159,7 +159,7 @@ Set these in `.env`:
 ```env
 LANGSMITH_TRACING=true
 LANGSMITH_API_KEY=your_key
-LANGSMITH_PROJECT=ai-lead-assistant
+LANGSMITH_PROJECT=bankops-ai-assistant
 ```
 
 Run a chat request, then open LangSmith and inspect:
