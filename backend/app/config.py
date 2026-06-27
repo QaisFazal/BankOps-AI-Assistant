@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-2.5-flash"
     langsmith_api_key: str | None = None
     langsmith_project: str = "bankops-ai-assistant"
     langsmith_tracing: bool = False

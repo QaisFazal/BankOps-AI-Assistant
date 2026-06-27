@@ -58,7 +58,7 @@ For Gemini answer generation, set:
 
 ```env
 GEMINI_API_KEY=your_key
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 ## Ingest Mock Documents
@@ -79,8 +79,11 @@ Create a Pinecone index with:
 
 ```text
 dimension: 256
-metric: dotproduct or cosine
+metric: dotproduct
 ```
+
+`dotproduct` is required because the adapter sends dense and sparse values in
+the same hybrid query. A cosine-only index rejects the sparse component.
 
 Then set `.env`:
 
@@ -204,6 +207,10 @@ Event types:
 - `token`: one streamed answer token.
 - `final_metadata`: final `agent_activity`, `citations`, and `session_id`.
 - `error`: safe user-facing streaming error message.
+
+Graph activity is emitted while nodes run. Gemini currently returns a complete
+answer, which the backend then splits into token events; this is not
+provider-native Gemini token streaming.
 
 ## Tests
 

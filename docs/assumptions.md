@@ -60,9 +60,17 @@ without a Gemini key still produce template-style answers.
 - No durable user/session memory.
 - No production document ingestion pipeline for PDFs, Word files, permissions,
   or incremental updates.
-- No Pinecone upsert script yet.
-- No real OpenAI embedding call wired into retrieval yet.
-- No streaming responses.
+- Pinecone ingestion supports JSONL chunk upserts, but it is a manual batch
+  script rather than an incremental production ingestion service.
+- Dense retrieval uses deterministic hash embeddings rather than a production
+  semantic embedding model.
+- Streaming emits live graph activity, then splits the completed Gemini answer
+  into token events rather than using provider-native token streaming.
+- The analytics tool is implemented and tested but is not yet invoked by the
+  LangGraph workflow.
+- The dummy MCP-style tool is not a real MCP server.
+- Citation validation reports invalid citations but does not yet replace the
+  generated answer with a blocked response.
 - No human feedback loop or evaluation dataset.
 - No tenant isolation beyond mock role and metadata filtering.
 - No production secrets management.
@@ -82,7 +90,11 @@ without a Gemini key still produce template-style answers.
 ## Future Improvements
 
 - Add production embeddings behind the existing embedding abstraction.
-- Add Pinecone ingestion/upsert support.
+- Extend Pinecone ingestion with incremental updates, deletion handling, and
+  source permission synchronization.
+- Route analytics requests through `python_analysis_tool` in LangGraph.
+- Replace the dummy MCP-style tool with a real MCP server and client.
+- Replace answers when citation validation fails.
 - Replace hardcoded RBAC with enterprise identity and policy checks.
 - Store memory in Redis or Postgres with encryption and retention settings.
 - Add eval traces and feedback scoring in LangSmith.

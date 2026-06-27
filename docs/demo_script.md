@@ -160,7 +160,7 @@ Explain the nodes:
 - `retrieval_node`: calls tools and retrievers.
 - `analysis_node`: summarizes retrieved evidence.
 - `response_node`: produces the final answer.
-- `citation_validation_node`: blocks citations not present in retrieved chunks.
+- `citation_validation_node`: reports citations not present in retrieved chunks.
 
 Show the Streamlit sidebar activity log and connect each log entry back to a
 LangGraph node.
@@ -231,6 +231,8 @@ Explain:
 - `LocalHybridRetriever` and `PineconeHybridRetriever` share the same search
   contract.
 - Pinecone namespaces can be environment-based or department-based.
+- The hybrid index uses dimension `256` and metric `dotproduct` because each
+  query includes dense and sparse values.
 - Metadata filters include department, document type, access level, title,
   source file, and created date.
 - If Pinecone fails, the adapter falls back to local retrieval and logs the
@@ -239,9 +241,13 @@ Explain:
 Show `.env.example`:
 
 ```env
-RETRIEVAL_BACKEND=local
+RETRIEVAL_BACKEND=pinecone
+PINECONE_INDEX_NAME=bankops-ai-assistant
 PINECONE_NAMESPACE_MODE=environment
 ```
+
+Run `python scripts\upsert_pinecone.py` before the demo, then use LangSmith and
+structured logs to confirm Pinecone did not fall back to local retrieval.
 
 ## 39:00-42:00 - LangSmith Observability
 
@@ -275,14 +281,21 @@ Summarize known limitations:
 - No durable memory.
 - Gemini is wired for answer generation, but local runs need a valid
   `GEMINI_API_KEY`.
-- No production Pinecone upsert pipeline yet.
+- Pinecone upsert is a manual batch script rather than an incremental ingestion
+  service.
+- Analytics is implemented as a tool but is not yet routed through LangGraph.
+- The enterprise data tool is MCP-style and is not a standalone MCP server.
+- Gemini output is split into token events after generation rather than streamed
+  natively from the provider.
 - Prompt-injection detection is pattern-based.
 - Secrets should be handled through a secret manager in production.
 
 Close with next steps:
 
-- Add OpenAI embeddings and a real chat model.
-- Add Pinecone ingestion/upsert.
+- Add a production semantic embedding provider.
+- Add incremental Pinecone ingestion and source synchronization.
+- Route analytics through LangGraph and implement a real MCP server.
+- Block or replace the final answer when citation validation fails.
 - Replace hardcoded RBAC with enterprise IAM.
 - Add evaluations and feedback loops in LangSmith.
 - Move session memory to durable storage.

@@ -27,7 +27,8 @@ The backend creates these trace spans:
 - `gemini_generate_answer`: the Gemini final-answer generation call.
 - `knowledge_search_tool`: the server-side search tool call.
 - `hybrid_retrieval`: the local or Pinecone-backed retrieval operation.
-- `python_analysis_tool`: structured incident analytics tool execution.
+- `python_analysis_tool`: structured incident analytics when invoked directly;
+  it is not yet routed through the graph.
 - `dummy_mcp_tool`: dummy enterprise data tool execution.
 
 Each traced run includes useful metadata:
@@ -67,7 +68,7 @@ Use this checklist to prove the LLM path is active:
 
    ```env
    GEMINI_API_KEY=your_gemini_key
-   GEMINI_MODEL=gemini-1.5-flash
+   GEMINI_MODEL=gemini-2.5-flash
    LANGSMITH_TRACING=true
    ```
 

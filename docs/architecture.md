@@ -68,6 +68,10 @@ The streaming endpoint uses newline-delimited JSON. It emits:
 Streamlit consumes `/chat/stream` by default. If streaming fails, it calls the
 existing `/chat` endpoint as a fallback.
 
+Node activity is streamed as LangGraph progresses. Gemini currently produces a
+complete answer before the backend splits it into `token` events, so answer
+tokens are streamed to the UI but are not emitted directly by the Gemini SDK.
+
 ## LangGraph Nodes
 
 The graph state carries `user_id`, `role`, `session_id`, `question`,
@@ -96,9 +100,9 @@ strategy.
 ### `retrieval_node`
 
 Calls tools through server-side authorization checks. It uses
-`knowledge_search_tool` for document retrieval and can optionally call the dummy
-MCP tool for enterprise data. Tool timeouts and optional MCP failures are
-recorded in activity logs without leaking stack traces to the user.
+`knowledge_search_tool` for document retrieval and can optionally call the
+dummy MCP-style enterprise data tool. Tool timeouts and optional tool failures
+are recorded in activity logs without leaking stack traces to the user.
 
 ### `analysis_node`
 
@@ -115,8 +119,9 @@ answer is returned instead.
 ### `citation_validation_node`
 
 Verifies every citation maps to a retrieved chunk. If a citation references a
-chunk that was not retrieved, the graph marks the run as failed and blocks the
-answer.
+chunk that was not retrieved, the node records a validation failure and error in
+agent activity. The current prototype does not yet clear or replace the answer
+after this failure.
 
 ## RAG Design
 
@@ -179,7 +184,8 @@ PINECONE_NAMESPACE_MODE=environment
 
 The current hash embedding provider produces 256-dimensional dense vectors, so
 the Pinecone index used for this prototype should be created with dimension
-`256`. The upsert script is:
+`256` and metric `dotproduct`. The metric is required because Pinecone hybrid
+queries include both dense and sparse values. The upsert script is:
 
 ```powershell
 python scripts\upsert_pinecone.py
@@ -227,13 +233,12 @@ The response node uses Google Gemini through the official `google-genai` Python
 SDK. The default model is:
 
 ```env
-GEMINI_MODEL=gemini-1.5-flash
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 Model rationale:
 
-- Gemini Flash is available through Google AI Studio and is practical for a free
-  or low-cost assignment demo.
+- Gemini Flash has a latency and cost profile suited to an assignment demo.
 - It has enough capability for grounded summarization over retrieved enterprise
   snippets.
 - It is faster and cheaper than larger reasoning models, which fits the POC
@@ -303,7 +308,7 @@ LangSmith traces are created for:
 - `gemini_generate_answer`
 - `knowledge_search_tool`
 - `hybrid_retrieval`
-- `python_analysis_tool`
+- `python_analysis_tool` when invoked directly
 - `dummy_mcp_tool`
 
 Each trace includes metadata:
@@ -330,7 +335,20 @@ The assistant avoids leaking stack traces to users.
 
 - LLM/response-generation failure returns a safe fallback message.
 - Pinecone failure falls back to local retrieval.
-- MCP failure continues without MCP and explains the limitation.
+- Dummy MCP-style tool failure continues without that context and explains the
+  limitation.
 - Tool timeout marks the tool status as failed.
 - All errors are logged structurally with component, operation, error type,
   fallback behavior, and session metadata where available.
+
+## Current Prototype Limitations
+
+- `python_analysis_tool` is implemented, permission-checked, traced, and tested,
+  but LangGraph does not yet route analytics questions through it.
+- `dummy_mcp_tool` mimics enterprise resources locally; it is not a standalone
+  MCP server or client integration.
+- Citation validation records invalid citations but does not yet replace the
+  generated answer with a blocked response.
+- Pinecone calls use the synchronous SDK inside async application methods.
+- Dense retrieval uses deterministic hash vectors rather than a production
+  semantic embedding model.
