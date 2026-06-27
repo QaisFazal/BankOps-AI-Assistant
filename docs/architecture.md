@@ -177,6 +177,17 @@ PINECONE_NAMESPACE=local
 PINECONE_NAMESPACE_MODE=environment
 ```
 
+The current hash embedding provider produces 256-dimensional dense vectors, so
+the Pinecone index used for this prototype should be created with dimension
+`256`. The upsert script is:
+
+```powershell
+python scripts\upsert_pinecone.py
+```
+
+It reads `data/document_chunks.jsonl`, creates dense and sparse vectors, and
+stores the same metadata used by local retrieval.
+
 Namespace strategy:
 
 - `environment`: use one namespace per environment, such as `local`, `dev`, or

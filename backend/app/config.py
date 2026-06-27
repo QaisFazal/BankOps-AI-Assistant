@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     retrieval_alpha: float = 0.6
 
     pinecone_api_key: str | None = None
-    pinecone_index_name: str = "ai-lead-assistant"
+    pinecone_index_name: str = "ragappindex"
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
     pinecone_namespace: str = "local"

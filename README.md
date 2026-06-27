@@ -73,6 +73,34 @@ This reads markdown files from `sample_docs/` and writes local chunks to:
 data/document_chunks.jsonl
 ```
 
+## Upsert Documents To Pinecone
+
+Create a Pinecone index with:
+
+```text
+dimension: 256
+metric: dotproduct or cosine
+```
+
+Then set `.env`:
+
+```env
+RETRIEVAL_BACKEND=pinecone
+PINECONE_API_KEY=your_key
+PINECONE_INDEX_NAME=ai-lead-assistant
+PINECONE_NAMESPACE=local
+PINECONE_NAMESPACE_MODE=environment
+```
+
+Run:
+
+```powershell
+python scripts\upsert_pinecone.py
+```
+
+The script reads `data/document_chunks.jsonl` and upserts vectors plus metadata
+into Pinecone.
+
 ## Run Backend
 
 ```powershell
