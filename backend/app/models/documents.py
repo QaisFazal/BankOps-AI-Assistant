@@ -9,6 +9,7 @@ class RetrievedDocument(BaseModel):
     id: str
     chunk_id: str | None = None
     document_id: str | None = None
+    chunk_index: int = 0
     title: str
     snippet: str
     score: float

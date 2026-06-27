@@ -145,7 +145,11 @@ are recorded in activity logs without leaking stack traces to the user.
 ### `analysis_node`
 
 Summarizes retrieved evidence. For planned searches, it aggregates batch
-summaries. For direct retrieval, it records the top source titles.
+summaries. For direct retrieval, it records the top source titles. Analytics
+requests retrieve authorized incident chunks, convert `Root Cause` sections and
+metadata into structured records, and execute `python_analysis_tool` in a worker
+thread. The resulting counts by root-cause category, department, and date are
+added to the grounded answer context.
 
 ### `response_node`
 
@@ -350,7 +354,7 @@ LangSmith traces are created for:
 - `gemini_generate_answer`
 - `knowledge_search_tool`
 - `hybrid_retrieval`
-- `python_analysis_tool` when invoked directly
+- `python_analysis_tool`
 - `dummy_mcp_tool`
 
 Each trace includes metadata:
@@ -385,8 +389,6 @@ The assistant avoids leaking stack traces to users.
 
 ## Current Prototype Limitations
 
-- `python_analysis_tool` is implemented, permission-checked, traced, and tested,
-  but LangGraph does not yet route analytics questions through it.
 - `dummy_mcp_tool` mimics enterprise resources locally; it is not a standalone
   MCP server or client integration.
 - Citation validation records invalid citations but does not yet replace the

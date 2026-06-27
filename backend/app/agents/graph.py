@@ -1,5 +1,6 @@
 """LangGraph workflow for the assistant."""
 
+import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -31,6 +32,7 @@ from app.services.llm_service import generate_answer as generate_llm_answer
 from app.tools.dummy_mcp import dummy_mcp_tool
 from app.tools.errors import ToolExecutionError, ToolTimeoutError
 from app.tools.permissions import ToolPermissionError, can_execute_tool
+from app.tools.python_analysis import python_analysis_tool
 from app.tools.knowledge_search import knowledge_search_tool
 
 
@@ -79,6 +81,8 @@ class AssistantState(TypedDict):
     search_plan: SearchPlan | None
     max_depth: int
     retrieval_results: list[RetrievedDocument]
+    analytics_requested: bool
+    analytics_result: dict[str, Any] | None
     tool_calls: list[str]
     batch_analyses: list[BatchAnalysis]
     analysis_result: str
@@ -113,6 +117,8 @@ ANALYTICS_REQUEST_MARKERS = (
     "summary statistics",
     "incident statistics",
     "trend",
+    "reliability weaknesses",
+    "recurring causes",
 )
 
 MCP_REQUEST_MARKERS = (
@@ -412,6 +418,82 @@ def deduplicate_results(results: list[RetrievedDocument]) -> list[RetrievedDocum
     return deduplicated
 
 
+def categorize_root_cause(root_cause: str) -> str:
+    """Map detailed incident causes into useful reliability categories."""
+
+    lowered = root_cause.lower()
+    if any(
+        marker in lowered
+        for marker in ("worker threads", "synchronous", "not sized", "capacity", "latency")
+    ):
+        return "dependency_capacity"
+    if any(marker in lowered for marker in ("maintenance", "replica", "rotation")):
+        return "change_and_maintenance"
+    if any(
+        marker in lowered
+        for marker in ("validator", "routing number", "alias", "format")
+    ):
+        return "data_validation_configuration"
+    return "other"
+
+
+def build_incident_records(
+    retrieval_results: list[RetrievedDocument],
+) -> list[dict[str, Any]]:
+    """Convert attributed incident chunks into validated analytics records."""
+
+    chunks_by_document: dict[str, list[RetrievedDocument]] = {}
+    for result in retrieval_results:
+        if result.document_type.lower() != "incident":
+            continue
+        document_id = result.document_id or result.id
+        chunks_by_document.setdefault(document_id, []).append(result)
+
+    records: list[dict[str, Any]] = []
+    for document_id, chunks in chunks_by_document.items():
+        ordered_chunks = sorted(chunks, key=lambda item: item.chunk_index)
+        combined_text = "\n\n".join(chunk.snippet for chunk in ordered_chunks)
+        root_cause_detail = extract_markdown_section(combined_text, ("Root Cause",))
+        root_cause_detail = re.sub(r"\s+", " ", root_cause_detail).strip() or "unknown"
+        first_chunk = ordered_chunks[0]
+        records.append(
+            {
+                "incident_id": document_id,
+                "title": first_chunk.title,
+                "root_cause": categorize_root_cause(root_cause_detail),
+                "root_cause_detail": root_cause_detail,
+                "department": first_chunk.department,
+                "date": first_chunk.created_date,
+                "source_file": first_chunk.source_file,
+                "chunk_ids": [chunk.chunk_id for chunk in ordered_chunks],
+            }
+        )
+
+    return records
+
+
+def format_analytics_result(result: dict[str, Any]) -> str:
+    """Format deterministic statistics for Gemini and fallback answers."""
+
+    def readable_counts(counts: dict[str, int]) -> str:
+        return ", ".join(
+            f"{name.replace('_', ' ')} ({count})"
+            for name, count in sorted(
+                counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        )
+
+    return (
+        f"Structured incident analytics found {result['total_incidents']} incident(s). "
+        f"Root-cause categories: {readable_counts(result['by_root_cause'])}. "
+        f"Departments: {readable_counts(result['by_department'])}. "
+        f"Incident dates: {readable_counts(result['by_date'])}. "
+        f"Most frequent root-cause category: "
+        f"{str(result['top_root_cause']).replace('_', ' ')}."
+    )
+
+
 def memory_key_for_user(session_id: str, user_id: str, role: str) -> str:
     """Scope memory by session, user, and role to avoid access-level leaks."""
 
@@ -480,6 +562,10 @@ async def supervisor_node(state: AssistantState) -> AssistantState:
     """Classify the standalone question after safety and contextualization."""
 
     state["intent"] = classify_intent(state["standalone_question"])
+    state["analytics_requested"] = (
+        requested_restricted_tool(state["standalone_question"])
+        == "python_analysis_tool"
+    )
     history_count = len(state["conversation_history"])
     return append_activity(
         state,
@@ -748,7 +834,48 @@ async def retrieval_node(state: AssistantState) -> AssistantState:
             str(exc),
         )
 
-    if state["search_plan"] is None:
+    if state["analytics_requested"]:
+        state["tool_calls"].append("knowledge_search_tool")
+        try:
+            state["retrieval_results"] = await knowledge_search_tool(
+                state["standalone_question"],
+                role=state["role"],
+                top_k=10,
+                metadata_filter={"document_type": "incident"},
+                user_id=state["user_id"],
+                session_id=state["session_id"],
+            )
+        except ToolTimeoutError as exc:
+            state["errors"].append(f"Tool timed out: {exc}")
+            state["validation_results"].append("tool execution failed")
+            state["retrieval_results"] = []
+            append_activity(
+                state,
+                "knowledge_search_tool",
+                "failed",
+                "Incident search timed out before analytics could run.",
+            )
+            return append_activity(
+                state,
+                "retrieval_node",
+                "failed",
+                "Analytics retrieval could not complete because search timed out.",
+            )
+        except (ToolPermissionError, GuardrailViolation, ToolExecutionError) as exc:
+            state["errors"].append(f"Tool guardrail blocked call: {exc}")
+            state["validation_results"].append("tool guardrail failed")
+            state["retrieval_results"] = []
+            append_activity(state, "guardrails", "blocked", str(exc))
+            return append_activity(state, "retrieval_node", "blocked", str(exc))
+
+        state["batch_analyses"].append(
+            summarize_batch(
+                state["standalone_question"],
+                depth=0,
+                results=state["retrieval_results"],
+            )
+        )
+    elif state["search_plan"] is None:
         state["tool_calls"].append("knowledge_search_tool")
         try:
             state["retrieval_results"] = await knowledge_search_tool(
@@ -826,6 +953,50 @@ async def analysis_node(state: AssistantState) -> AssistantState:
             "analysis_node",
             "completed",
             "No retrieved chunks were available to analyze.",
+        )
+
+    if state["analytics_requested"]:
+        incident_records = build_incident_records(state["retrieval_results"])
+        state["tool_calls"].append("python_analysis_tool")
+        try:
+            analytics_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    python_analysis_tool,
+                    incident_records,
+                    role=state["role"],
+                    user_id=state["user_id"],
+                    session_id=state["session_id"],
+                ),
+                timeout=get_settings().tool_timeout_seconds,
+            )
+        except TimeoutError:
+            state["errors"].append("Tool timed out: python_analysis_tool timed out.")
+            state["validation_results"].append("analytics tool execution failed")
+            return append_activity(
+                state,
+                "python_analysis_tool",
+                "failed",
+                "Incident analytics timed out.",
+            )
+        except (ToolPermissionError, GuardrailViolation) as exc:
+            state["errors"].append(f"Tool guardrail blocked call: {exc}")
+            state["validation_results"].append("analytics tool guardrail failed")
+            return append_activity(state, "python_analysis_tool", "blocked", str(exc))
+
+        state["analytics_result"] = analytics_result
+        state["analysis_result"] = format_analytics_result(analytics_result)
+        state["validation_results"].append("python analytics completed")
+        append_activity(
+            state,
+            "python_analysis_tool",
+            "completed",
+            f"Analyzed {analytics_result['total_incidents']} incident record(s).",
+        )
+        return append_activity(
+            state,
+            "analysis_node",
+            "completed",
+            "Added structured incident statistics to grounded answer context.",
         )
 
     if state["search_plan"] is not None:
@@ -1386,6 +1557,8 @@ def initial_state_from_request(request: ChatRequest) -> AssistantState:
         "search_plan": None,
         "max_depth": 2,
         "retrieval_results": [],
+        "analytics_requested": False,
+        "analytics_result": None,
         "tool_calls": [],
         "batch_analyses": [],
         "analysis_result": "",

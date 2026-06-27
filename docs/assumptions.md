@@ -75,8 +75,6 @@ without a Gemini key still produce template-style answers.
   history. Provider failure uses a less capable deterministic fallback.
 - Streaming emits live graph activity, then splits the completed Gemini answer
   into token events rather than using provider-native token streaming.
-- The analytics tool is implemented and tested but is not yet invoked by the
-  LangGraph workflow.
 - The dummy MCP-style tool is not a real MCP server.
 - Citation validation reports invalid citations but does not yet replace the
   generated answer with a blocked response.
@@ -101,7 +99,6 @@ without a Gemini key still produce template-style answers.
 - Cache local document embeddings and batch large ingestion workloads.
 - Extend Pinecone ingestion with incremental updates, deletion handling, and
   source permission synchronization.
-- Route analytics requests through `python_analysis_tool` in LangGraph.
 - Replace the dummy MCP-style tool with a real MCP server and client.
 - Replace answers when citation validation fails.
 - Replace hardcoded RBAC with enterprise identity and policy checks.

@@ -446,6 +446,87 @@ def test_viewer_gets_graceful_unauthorized_response_for_analytics() -> None:
     assert "tool authorization failed" in response.agent_activity.validation_results
 
 
+def test_analyst_executes_python_analytics_through_graph(monkeypatch) -> None:
+    """An analytics question should retrieve incidents and run the Python tool."""
+
+    search_arguments: dict[str, Any] = {}
+
+    def incident(
+        *,
+        chunk_id: str,
+        document_id: str,
+        title: str,
+        department: str,
+        root_cause: str,
+    ) -> RetrievedDocument:
+        return RetrievedDocument(
+            id=chunk_id,
+            chunk_id=chunk_id,
+            document_id=document_id,
+            chunk_index=0,
+            title=title,
+            snippet=f"# {title}\n\n## Root Cause\n\n{root_cause}\n\n## Resolution\n\nFixed.",
+            score=0.9,
+            source_file=f"incidents/{document_id}.md",
+            department=department,
+            document_type="incident",
+            access_level="internal",
+            created_date="2025-01-01",
+        )
+
+    async def incident_search(query: str, **kwargs: Any) -> list[RetrievedDocument]:
+        search_arguments.update({"query": query, **kwargs})
+        return [
+            incident(
+                chunk_id="payment-0000",
+                document_id="payment",
+                title="Payment Gateway Timeout",
+                department="payments",
+                root_cause="Worker threads exhausted after increased TLS latency.",
+            ),
+            incident(
+                chunk_id="cards-0000",
+                document_id="cards",
+                title="Card Authorization Latency",
+                department="cards",
+                root_cause="A synchronous service was not sized for authorization traffic.",
+            ),
+            incident(
+                chunk_id="mobile-0000",
+                document_id="mobile",
+                title="Mobile Bill Pay Degradation",
+                department="digital_banking",
+                root_cause="A replica was removed during database maintenance.",
+            ),
+        ]
+
+    monkeypatch.setattr(graph, "knowledge_search_tool", incident_search)
+
+    response = asyncio.run(
+        run_assistant(
+            ChatRequest(
+                user_id="analyst-1",
+                role="analyst",
+                message="Review all operational incidents and identify reliability weaknesses.",
+                session_id="analytics-session",
+            )
+        )
+    )
+
+    assert search_arguments["top_k"] == 10
+    assert search_arguments["metadata_filter"] == {"document_type": "incident"}
+    assert response.agent_activity.tool_calls == [
+        "knowledge_search_tool",
+        "python_analysis_tool",
+    ]
+    assert "python analytics completed" in response.agent_activity.validation_results
+    assert "dependency capacity (2)" in response.answer
+    assert any(
+        entry["node"] == "python_analysis_tool" and entry["status"] == "completed"
+        for entry in response.agent_activity.activity_log
+    )
+
+
 def test_viewer_cannot_access_card_network_failover_steps() -> None:
     """Viewer should not receive restricted operational procedure details."""
 

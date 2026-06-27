@@ -200,6 +200,16 @@ Show:
 - `recursive_retrieval` activity.
 - No depth beyond 2.
 
+As an Analyst, demonstrate structured analytics:
+
+```text
+Review all operational incidents and identify common reliability weaknesses.
+```
+
+Show `knowledge_search_tool` retrieving incident documents followed by
+`python_analysis_tool` grouping incidents by root-cause category, department,
+and date.
+
 ## 30:00-35:00 - RBAC and Guardrails
 
 Switch role to `viewer`.
@@ -297,7 +307,6 @@ Summarize known limitations:
   `GEMINI_API_KEY`.
 - Pinecone upsert is a manual batch script rather than an incremental ingestion
   service.
-- Analytics is implemented as a tool but is not yet routed through LangGraph.
 - The enterprise data tool is MCP-style and is not a standalone MCP server.
 - Gemini output is split into token events after generation rather than streamed
   natively from the provider.

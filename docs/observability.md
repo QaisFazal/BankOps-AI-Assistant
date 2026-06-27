@@ -29,8 +29,8 @@ The backend creates these trace spans:
   active-topic output.
 - `knowledge_search_tool`: the server-side search tool call.
 - `hybrid_retrieval`: the local or Pinecone-backed retrieval operation.
-- `python_analysis_tool`: structured incident analytics when invoked directly;
-  it is not yet routed through the graph.
+- `python_analysis_tool`: structured incident analytics routed by LangGraph for
+  authorized Analyst and Administrator requests.
 - `dummy_mcp_tool`: dummy enterprise data tool execution.
 
 Each traced run includes useful metadata:

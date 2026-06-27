@@ -15,6 +15,7 @@ The project demonstrates:
 - Session-based conversational memory
 - Gemini question contextualization for history-aware retrieval
 - Tool layer with permission checks
+- LangGraph-routed incident analytics for Analyst and Administrator roles
 - Google Gemini response generation with deterministic fallback
 - LangSmith tracing for graph runs, tools, and retrieval
 - Graceful error handling for tool, retrieval, MCP, and response-generation
