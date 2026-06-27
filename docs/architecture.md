@@ -13,98 +13,44 @@ and traceability while still demonstrating a real LLM call.
 ## Component Map
 
 ```mermaid
-flowchart TB
-    U["Bank employee"] --> FE["Streamlit chat + activity panel"]
+flowchart LR
+    USER["Bank employee"] --> UI["Streamlit chat"]
+    UI --> API["FastAPI<br/>streaming or standard chat"]
+    API --> GATE["Validate request<br/>rate limit + role check"]
 
-    subgraph API["FastAPI boundary"]
-        STREAM["POST /chat/stream<br/>NDJSON activity + answer events"]
-        CHAT["POST /chat<br/>non-streaming fallback"]
-        VALIDATE["Pydantic request validation"]
-        RATE["Per-user token bucket"]
-        ROLE["Role validation"]
-        INIT["Load session memory<br/>build AssistantState"]
-        STREAM --> VALIDATE
-        CHAT --> VALIDATE
-        VALIDATE --> RATE --> ROLE --> INIT
+    subgraph GRAPH["LangGraph workflow"]
+        SUP["1. Classify intent"] --> SEC["2. Security checks"]
+        SEC -->|"allowed"| PLAN["3. Plan search"]
+        PLAN --> RET["4. Retrieve evidence"]
+        ANALYZE["5. Analyze evidence"] --> RESP["6. Generate answer<br/>Gemini + fallback"]
+        SEC -->|"blocked"| RESP
+        RESP --> CITE["7. Validate citations"]
     end
 
-    FE --> STREAM
-    FE -. "stream failure" .-> CHAT
+    GATE --> SUP
+    RET --> SEARCH["Permission-checked<br/>hybrid search"]
+    SEARCH --> STORE["Pinecone<br/>with local fallback"]
+    STORE --> ANALYZE
+    CITE --> MEMORY["Save session memory"]
+    MEMORY --> UI
 
-    subgraph GRAPH["LangGraph assistant workflow"]
-        SUP["Supervisor<br/>classify intent"]
-        SEC["Security<br/>input, injection, RBAC checks"]
-        PLAN["Planning<br/>direct or simplified RLM plan"]
-        RECURSE["Recursive search<br/>max_depth = 2"]
-        RETNODE["Retrieval node"]
-        ANALYZE["Analysis node<br/>aggregate evidence"]
-        RESPONSE["Response node"]
-        GEMINI["Gemini 2.5 Flash<br/>grounded answer"]
-        FALLBACK["Deterministic answer fallback"]
-        CITE["Citation validation node"]
-
-        INIT --> SUP --> SEC
-        SEC -->|"allowed"| PLAN
-        SEC -->|"blocked"| RESPONSE
-        PLAN -->|"narrow question"| RETNODE
-        PLAN -->|"broad question"| RECURSE --> RETNODE
-        RETNODE --> ANALYZE --> RESPONSE
-        RESPONSE --> FALLBACK
-        RESPONSE -->|"eligible request"| GEMINI
-        GEMINI -. "missing key, failure, or timeout" .-> FALLBACK
-        GEMINI --> CITE
-        FALLBACK --> CITE
-    end
-
-    subgraph TOOLS["Permission-checked tools"]
-        SEARCH["knowledge_search_tool"]
-        MCP["dummy MCP-style enterprise data"]
-        PYTHON["python_analysis_tool<br/>implemented, not graph-routed"]
-    end
-
-    RETNODE --> SEARCH
-    RETNODE -. "optional request" .-> MCP
-    PYTHON -. "future analytics route" .-> ANALYZE
-
-    subgraph RETRIEVAL["Hybrid retrieval"]
-        INTERFACE["Retriever interface"]
-        PINECONE["PineconeHybridRetriever<br/>namespace + metadata filters"]
-        LOCAL["LocalHybridRetriever<br/>hash dense score + BM25"]
-        RESULTS["Role-filtered chunks<br/>with document attribution"]
-        INTERFACE -->|"configured backend"| PINECONE
-        INTERFACE -->|"local mode"| LOCAL
-        PINECONE -. "unavailable" .-> LOCAL
-        PINECONE --> RESULTS
-        LOCAL --> RESULTS
-    end
-
-    SEARCH --> INTERFACE
-    RESULTS --> RETNODE
-
-    subgraph INGEST["Document ingestion"]
-        DOCS["Mock bank Markdown documents"]
-        PARSE["Parse YAML metadata"]
-        CHUNK["Paragraph-aware chunking<br/>stable document + chunk IDs"]
-        JSONL["Local JSONL chunk store"]
-        VECTORIZE["Hash dense vectors<br/>+ sparse vectors"]
-        UPSERT["Manual Pinecone batch upsert"]
-        DOCS --> PARSE --> CHUNK --> JSONL
-        JSONL --> VECTORIZE --> UPSERT --> PINECONE
-        JSONL --> LOCAL
-    end
-
-    CITE --> MEMORY["Save and summarize<br/>in-memory session history"]
-    MEMORY --> EVENTS["Answer + citations<br/>agent activity + memory updates"]
-    EVENTS --> STREAM
-    EVENTS --> CHAT
-    STREAM --> FE
-    CHAT --> FE
-
-    LS["LangSmith traces<br/>graph, Gemini, tools, retrieval"]
+    LS["LangSmith tracing"]
     SUP -.-> LS
-    GEMINI -.-> LS
     SEARCH -.-> LS
-    INTERFACE -.-> LS
+    RESP -.-> LS
+```
+
+## Document Ingestion Map
+
+```mermaid
+flowchart LR
+    DOCS["Bank documents"] --> PARSE["Parse text<br/>and metadata"]
+    PARSE --> CHUNK["Create attributed chunks"]
+    CHUNK --> JSONL["Local JSONL store"]
+    JSONL --> LOCAL["Local hybrid retrieval"]
+    JSONL --> EMBED["Create dense<br/>and sparse vectors"]
+    EMBED --> UPSERT["Batch upsert"]
+    UPSERT --> PINECONE["Pinecone index"]
 ```
 
 ## Backend Request Flow
