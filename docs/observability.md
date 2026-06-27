@@ -37,6 +37,7 @@ Each traced run includes useful metadata:
 - `role`
 - `session_id`
 - tool or retriever details when relevant
+- embedding provider, model, and dimensions on retrieval runs
 
 This makes it easier to filter traces by user session, compare role behavior, and
 debug why a response used a specific source.

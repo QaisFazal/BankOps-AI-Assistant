@@ -106,7 +106,7 @@ hybrid_score = alpha * dense_score + (1 - alpha) * sparse_score
 
 Point out:
 
-- Dense score is currently hash-embedding cosine similarity.
+- Dense score is cosine similarity over 768-dimensional Gemini embeddings.
 - Sparse score is BM25.
 - `RETRIEVAL_ALPHA=0.6` favors dense search slightly.
 - Retrieved citations are validated before the answer is returned.
@@ -231,7 +231,7 @@ Explain:
 - `LocalHybridRetriever` and `PineconeHybridRetriever` share the same search
   contract.
 - Pinecone namespaces can be environment-based or department-based.
-- The hybrid index uses dimension `256` and metric `dotproduct` because each
+- The hybrid index uses dimension `768` and metric `dotproduct` because each
   query includes dense and sparse values.
 - Metadata filters include department, document type, access level, title,
   source file, and created date.
@@ -292,7 +292,7 @@ Summarize known limitations:
 
 Close with next steps:
 
-- Add a production semantic embedding provider.
+- Cache local Gemini document embeddings and batch large ingestion workloads.
 - Add incremental Pinecone ingestion and source synchronization.
 - Route analytics through LangGraph and implement a real MCP server.
 - Block or replace the final answer when citation validation fails.

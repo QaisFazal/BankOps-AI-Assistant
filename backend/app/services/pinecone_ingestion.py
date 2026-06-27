@@ -10,7 +10,7 @@ from pinecone import Pinecone
 
 from app.config import get_settings
 from app.models.documents import DocumentChunk
-from app.retrieval.embeddings import HashEmbeddingProvider, tokenize
+from app.retrieval.embeddings import EmbeddingProvider, build_embedding_provider, tokenize
 
 
 DEFAULT_BATCH_SIZE = 100
@@ -34,7 +34,6 @@ def load_document_chunks(jsonl_path: Path) -> list[DocumentChunk]:
 def build_sparse_vector(
     text: str,
     *,
-    alpha: float,
     sparse_dimensions: int,
 ) -> dict[str, list[int] | list[float]]:
     """Build the same sparse vector shape used by Pinecone query calls."""
@@ -48,7 +47,7 @@ def build_sparse_vector(
     indices = sorted(token_counts)
     return {
         "indices": indices,
-        "values": [token_counts[index] * (1 - alpha) for index in indices],
+        "values": [token_counts[index] for index in indices],
     }
 
 
@@ -86,19 +85,19 @@ def build_chunk_metadata(chunk: DocumentChunk) -> dict[str, str | int]:
 async def build_pinecone_vector(
     chunk: DocumentChunk,
     *,
-    embedding_provider: HashEmbeddingProvider,
-    alpha: float,
+    embedding_provider: EmbeddingProvider,
     sparse_dimensions: int,
 ) -> dict[str, Any]:
     """Build one Pinecone hybrid vector payload."""
 
-    dense_vector = (await embedding_provider.embed_texts([chunk.text]))[0]
+    dense_vector = (
+        await embedding_provider.embed_texts([chunk.text], task="document")
+    )[0]
     return {
         "id": chunk.chunk_id,
-        "values": [value * alpha for value in dense_vector],
+        "values": dense_vector,
         "sparse_values": build_sparse_vector(
             chunk.text,
-            alpha=alpha,
             sparse_dimensions=sparse_dimensions,
         ),
         "metadata": build_chunk_metadata(chunk),
@@ -118,6 +117,7 @@ async def upsert_chunks_to_pinecone(
     *,
     jsonl_path: Path,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    embedding_provider: EmbeddingProvider | None = None,
     index: Any | None = None,
 ) -> int:
     """Read local chunks and upsert them into the configured Pinecone index."""
@@ -133,7 +133,9 @@ async def upsert_chunks_to_pinecone(
     pinecone_index = index or Pinecone(api_key=settings.pinecone_api_key).Index(
         settings.pinecone_index_name
     )
-    embedding_provider = HashEmbeddingProvider()
+    active_embedding_provider = embedding_provider or build_embedding_provider(
+        allow_hash_fallback=False
+    )
     upserted_count = 0
 
     vectors_by_namespace: dict[str, list[dict[str, Any]]] = {}
@@ -147,8 +149,7 @@ async def upsert_chunks_to_pinecone(
         vectors_by_namespace.setdefault(namespace, []).append(
             await build_pinecone_vector(
                 chunk,
-                embedding_provider=embedding_provider,
-                alpha=settings.retrieval_alpha,
+                embedding_provider=active_embedding_provider,
                 sparse_dimensions=settings.pinecone_sparse_dimensions,
             )
         )

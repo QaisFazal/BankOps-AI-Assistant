@@ -5,6 +5,7 @@ BM25 keyword score. Pinecone can replace this later while preserving the same
 search-facing behavior.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from app.models.documents import DocumentChunk, RetrievedDocument
 from app.retrieval.base import MetadataFilter
 from app.retrieval.embeddings import (
     EmbeddingProvider,
+    FallbackEmbeddingProvider,
     HashEmbeddingProvider,
     cosine_similarity,
     tokenize,
@@ -164,7 +166,25 @@ class LocalHybridRetriever:
         return normalize_scores(raw_scores)
 
     async def _dense_scores(self, query: str, chunks: list[DocumentChunk]) -> list[float]:
-        vectors = await self.embedding_provider.embed_texts([query, *[chunk.text for chunk in chunks]])
-        query_vector = vectors[0]
-        chunk_vectors = vectors[1:]
+        document_texts = [chunk.text for chunk in chunks]
+        if isinstance(self.embedding_provider, FallbackEmbeddingProvider):
+            query_vector, chunk_vectors = (
+                await self.embedding_provider.embed_query_and_documents(
+                    query,
+                    document_texts,
+                )
+            )
+            return [
+                cosine_similarity(query_vector, chunk_vector)
+                for chunk_vector in chunk_vectors
+            ]
+
+        query_vectors, chunk_vectors = await asyncio.gather(
+            self.embedding_provider.embed_texts([query], task="query"),
+            self.embedding_provider.embed_texts(
+                document_texts,
+                task="document",
+            ),
+        )
+        query_vector = query_vectors[0]
         return [cosine_similarity(query_vector, chunk_vector) for chunk_vector in chunk_vectors]

@@ -9,7 +9,13 @@ from app.retrieval.pinecone_hybrid import PineconeHybridRetriever
 class FakeEmbeddingProvider:
     """Return a tiny deterministic vector for tests."""
 
-    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    async def embed_texts(
+        self,
+        texts: list[str],
+        *,
+        task: str = "document",
+    ) -> list[list[float]]:
+        _ = task
         return [[1.0, 0.0, 0.0] for _ in texts]
 
 

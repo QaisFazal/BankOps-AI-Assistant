@@ -4,6 +4,7 @@ import asyncio
 import json
 
 from app.models.documents import DocumentChunk
+from app.retrieval.embeddings import HashEmbeddingProvider
 from app.services import pinecone_ingestion
 from app.services.pinecone_ingestion import (
     build_chunk_metadata,
@@ -50,13 +51,13 @@ def test_build_sparse_vector_matches_expected_shape() -> None:
 
     sparse_vector = build_sparse_vector(
         "payment payment outage",
-        alpha=0.6,
         sparse_dimensions=100_000,
     )
 
     assert sorted(sparse_vector["indices"]) == sparse_vector["indices"]
     assert len(sparse_vector["indices"]) == len(sparse_vector["values"])
     assert all(value > 0 for value in sparse_vector["values"])
+    assert max(sparse_vector["values"]) == 2.0
 
 
 def test_resolve_upsert_namespace_supports_environment_and_department() -> None:
@@ -130,6 +131,7 @@ def test_upsert_chunks_to_pinecone_groups_vectors_by_namespace(tmp_path, monkeyp
         upsert_chunks_to_pinecone(
             jsonl_path=jsonl_path,
             batch_size=1,
+            embedding_provider=HashEmbeddingProvider(dimensions=3),
             index=fake_index,
         )
     )
@@ -139,4 +141,5 @@ def test_upsert_chunks_to_pinecone_groups_vectors_by_namespace(tmp_path, monkeyp
     assert upserted_count == 2
     assert namespaces == {"local-payments", "local-cards"}
     assert fake_index.calls[0]["vectors"][0]["metadata"]["text"]
+    assert len(fake_index.calls[0]["vectors"][0]["values"]) == 3
     assert "sparse_values" in fake_index.calls[0]["vectors"][0]

@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
+    embedding_provider: str = "gemini"
+    gemini_embedding_model: str = "gemini-embedding-2"
+    embedding_dimensions: int = 768
     langsmith_api_key: str | None = None
     langsmith_project: str = "bankops-ai-assistant"
     langsmith_tracing: bool = False

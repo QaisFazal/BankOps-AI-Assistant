@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.models.documents import RetrievedDocument
 from app.observability.tracing import build_run_metadata, set_trace_outputs, trace_run
 from app.retrieval.base import MetadataFilter, Retriever
+from app.retrieval.embeddings import build_embedding_provider
 from app.retrieval.local_hybrid import LocalHybridRetriever
 from app.retrieval.pinecone_hybrid import PineconeHybridRetriever
 
@@ -24,7 +25,11 @@ def build_retriever(jsonl_path: Path = DEFAULT_JSONL_PATH) -> Retriever:
     """Build the configured retriever with local fallback."""
 
     settings = get_settings()
-    local_retriever = LocalHybridRetriever(jsonl_path=jsonl_path, alpha=settings.retrieval_alpha)
+    local_retriever = LocalHybridRetriever(
+        jsonl_path=jsonl_path,
+        embedding_provider=build_embedding_provider(allow_hash_fallback=True),
+        alpha=settings.retrieval_alpha,
+    )
 
     if settings.retrieval_backend != "pinecone":
         return local_retriever
@@ -40,6 +45,7 @@ def build_retriever(jsonl_path: Path = DEFAULT_JSONL_PATH) -> Retriever:
             environment=settings.environment,
             namespace=settings.pinecone_namespace,
             namespace_mode=settings.pinecone_namespace_mode,
+            embedding_provider=build_embedding_provider(allow_hash_fallback=False),
             alpha=settings.retrieval_alpha,
             sparse_dimensions=settings.pinecone_sparse_dimensions,
             fallback_retriever=local_retriever,
@@ -68,6 +74,9 @@ async def retrieve_relevant_context(
         session_id=session_id,
         retrieval_backend=settings.retrieval_backend,
         retriever_type=type(retriever).__name__,
+        embedding_provider=settings.embedding_provider,
+        embedding_model=settings.gemini_embedding_model,
+        embedding_dimensions=settings.embedding_dimensions,
     )
     with trace_run(
         "hybrid_retrieval",

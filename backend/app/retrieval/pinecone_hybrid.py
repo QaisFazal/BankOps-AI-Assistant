@@ -64,7 +64,9 @@ class PineconeHybridRetriever:
 
             dense_vector = [
                 value * self.alpha
-                for value in (await self.embedding_provider.embed_texts([query]))[0]
+                for value in (
+                    await self.embedding_provider.embed_texts([query], task="query")
+                )[0]
             ]
             response = self.index.query(
                 vector=dense_vector,

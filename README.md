@@ -59,6 +59,9 @@ For Gemini answer generation, set:
 ```env
 GEMINI_API_KEY=your_key
 GEMINI_MODEL=gemini-2.5-flash
+EMBEDDING_PROVIDER=gemini
+GEMINI_EMBEDDING_MODEL=gemini-embedding-2
+EMBEDDING_DIMENSIONS=768
 ```
 
 ## Ingest Mock Documents
@@ -78,12 +81,14 @@ data/document_chunks.jsonl
 Create a Pinecone index with:
 
 ```text
-dimension: 256
+dimension: 768
 metric: dotproduct
 ```
 
 `dotproduct` is required because the adapter sends dense and sparse values in
 the same hybrid query. A cosine-only index rejects the sparse component.
+The index dimension must match `EMBEDDING_DIMENSIONS`. Changing embedding models
+or dimensions requires recreating the index and re-embedding every chunk.
 
 Then set `.env`:
 

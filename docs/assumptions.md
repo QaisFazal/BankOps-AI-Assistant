@@ -22,11 +22,13 @@ Local JSONL retrieval is easy to run, test, and explain. It avoids external
 dependencies during development. The tradeoff is that it does not provide
 production vector indexing, horizontal scale, or managed search operations.
 
-### Hash Embeddings
+### Gemini Embeddings With Local Fallback
 
-The dense embedding provider uses deterministic hash embeddings. This keeps
-tests repeatable and avoids requiring OpenAI credentials. The tradeoff is that
-semantic quality is much weaker than real embeddings.
+Dense retrieval uses `gemini-embedding-2` with 768-dimensional vectors. Query
+and document inputs use different retrieval prefixes recommended for asymmetric
+search. Local retrieval falls back to same-size deterministic hash vectors when
+Gemini is unavailable, keeping development usable at lower semantic quality.
+Pinecone ingestion requires Gemini and never silently stores fallback vectors.
 
 ### Hardcoded RBAC
 
@@ -62,8 +64,10 @@ without a Gemini key still produce template-style answers.
   or incremental updates.
 - Pinecone ingestion supports JSONL chunk upserts, but it is a manual batch
   script rather than an incremental production ingestion service.
-- Dense retrieval uses deterministic hash embeddings rather than a production
-  semantic embedding model.
+- Local retrieval recomputes document embeddings for each search instead of
+  caching them.
+- Gemini embedding availability, quotas, latency, and cost affect semantic
+  retrieval.
 - Streaming emits live graph activity, then splits the completed Gemini answer
   into token events rather than using provider-native token streaming.
 - The analytics tool is implemented and tested but is not yet invoked by the
@@ -89,7 +93,7 @@ without a Gemini key still produce template-style answers.
 
 ## Future Improvements
 
-- Add production embeddings behind the existing embedding abstraction.
+- Cache local document embeddings and batch large ingestion workloads.
 - Extend Pinecone ingestion with incremental updates, deletion handling, and
   source permission synchronization.
 - Route analytics requests through `python_analysis_tool` in LangGraph.

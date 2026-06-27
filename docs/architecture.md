@@ -177,14 +177,15 @@ hybrid_score = alpha * dense_score + (1 - alpha) * sparse_score
 
 Where:
 
-- `dense_score` is cosine similarity between the query vector and chunk vector.
+- `dense_score` is cosine similarity between Gemini query and document vectors.
 - `sparse_score` is a normalized BM25 keyword score.
 - `alpha` is configurable with `RETRIEVAL_ALPHA`.
 - The default `alpha` is `0.6`, slightly favoring dense semantic similarity.
 
-The current dense embedding provider is a deterministic hash-based abstraction.
-It keeps tests local and repeatable while preserving the interface needed to
-swap in OpenAI embeddings or another embedding provider later.
+The configured dense provider is `gemini-embedding-2` with 768-dimensional
+vectors. Query text and document text use Gemini's asymmetric retrieval
+formatting. Local retrieval can fall back to a same-size deterministic hash
+provider when Gemini is unavailable; tests use deterministic providers directly.
 
 ## Pinecone Strategy
 
@@ -203,9 +204,9 @@ PINECONE_NAMESPACE=local
 PINECONE_NAMESPACE_MODE=environment
 ```
 
-The current hash embedding provider produces 256-dimensional dense vectors, so
-the Pinecone index used for this prototype should be created with dimension
-`256` and metric `dotproduct`. The metric is required because Pinecone hybrid
+The Gemini embedding provider produces 768-dimensional dense vectors, so the
+Pinecone index used for this prototype should be created with dimension `768`
+and metric `dotproduct`. The metric is required because Pinecone hybrid
 queries include both dense and sparse values. The upsert script is:
 
 ```powershell
@@ -214,6 +215,9 @@ python scripts\upsert_pinecone.py
 
 It reads `data/document_chunks.jsonl`, creates dense and sparse vectors, and
 stores the same metadata used by local retrieval.
+
+Pinecone ingestion requires `GEMINI_API_KEY`; it does not silently use hash
+vectors. Existing 256-dimensional indexes must be replaced and fully re-indexed.
 
 Namespace strategy:
 
@@ -371,5 +375,7 @@ The assistant avoids leaking stack traces to users.
 - Citation validation records invalid citations but does not yet replace the
   generated answer with a blocked response.
 - Pinecone calls use the synchronous SDK inside async application methods.
-- Dense retrieval uses deterministic hash vectors rather than a production
-  semantic embedding model.
+- Local semantic retrieval calls Gemini for document vectors on each search;
+  production local retrieval should cache precomputed document embeddings.
+- Local retrieval can degrade to lexical hash vectors when Gemini embeddings
+  fail, while Pinecone failures degrade to the local retriever.
